@@ -41,7 +41,7 @@ void loop() {
   motor.setPWM(controller.compute(encoder.getRotation()));
 
   enum direction dir = left;
-
+  // turn left
   while (count < 4) {
     int curr_pos = mpu.getAngleZ();
     turning(left);
@@ -52,8 +52,9 @@ void loop() {
 
   delay(1000);
   count = 0;
-  dir = right;
 
+  dir = right;
+  // turn right
   while (count < 4) {
     int curr_pos = mpu.getAngleZ();
     turning(right);
