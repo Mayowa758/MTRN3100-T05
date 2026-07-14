@@ -2,6 +2,7 @@
 #include "Motor.hpp"
 #include "PIDController.hpp"
 #include <MPU6050_light.h>
+#include "EncoderOdometry.hpp"
 
 #define MOT1PWM 11
 #define MOT1DIR 12
@@ -20,20 +21,25 @@ mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
 mtrn3100::DualEncoder encoder(EN_A, EN_B, EN_A2, EN_B2);
 
 // PID Controllers
-mtrn3100::PIDController controller1(25, 0, 0);
-mtrn3100::PIDController controller2(25, 0, 0);
+mtrn3100::PIDController controller1(14, 0, 0.3);
+mtrn3100::PIDController controller2(14, 0, 0.3);
+
+bool finishedDrive = false;
+bool finishedTurn = false;
 
 // IMU
-// MPU6050 mpu(Wire);
 MPU6050 mpu(Wire);
 
 float targetHeading = 0.0; 
-const float K_HEADING = 5.0;
+const float K_HEADING = 27;
+const float K_SYNC = -1.1;
 
-const float WHEEL_RADIUS = 0.028f;   // metres
+const float WHEEL_RADIUS = 0.017f;   // metres
 const float WHEEL_BASE   = 0.145f;   // distance between wheels
+float targetDistance = 1.0f; // metres
+float targetAngle = targetDistance / WHEEL_RADIUS;
 
-// mtrn3100::EncoderOdometry odom(WHEEL_RADIUS, WHEEL_BASE);
+mtrn3100::EncoderOdometry odom(WHEEL_RADIUS, WHEEL_BASE);
 
 unsigned long lastPIDTime = 0;
 const unsigned long PID_INTERVAL = 10000;   // 10 ms
@@ -46,23 +52,24 @@ void setup() {
     // Robot must be completely still during setup to calibrate the gyroscope
     Serial.println("Hello");
 
-    // mpu.begin();
-    // Serial.println("mpu.begin() returned");
-    // Serial.println("Done");
-    // mpu.calcOffsets();
+    mpu.begin();
+    Serial.println("mpu.begin() returned");
+    mpu.calcOffsets(true, true);
+    delay(500);
 
-    controller1.zeroAndSetTarget(encoder.getLeftRotation(), 100);
-    controller2.zeroAndSetTarget(-encoder.getRightRotation(), 100);
+    controller1.zeroAndSetTarget(encoder.getLeftRotation(), targetAngle);
+    controller2.zeroAndSetTarget(-encoder.getRightRotation(), targetAngle);
 
     Serial.println("Done");
 
-    // targetHeading = mpu.getAngleZ();
+    targetHeading = mpu.getAngleZ();
     // Serial.println(targetHeading);
 }
 
 void loop() {
 
     unsigned long currentTime = micros();
+    mpu.update();
 
     if (currentTime - lastPIDTime >= PID_INTERVAL) {
 
@@ -76,20 +83,27 @@ void loop() {
         float leftPWM  = controller1.compute(leftPos);
         float rightPWM = controller2.compute(rightPos);
 
-        // float headingError = targetHeading - mpu.getAngleZ();
-        // float headingCorrection = K_HEADING * headingError;
+        float headingError = targetHeading - mpu.getAngleZ();
+        float headingCorrection = K_HEADING * headingError;
+        headingCorrection = constrain(headingCorrection, -60, 60);
+
+        
 
         float syncError = leftPos - rightPos;
-        float syncComputation = syncError * 57;
+        float syncCorrection = syncError * K_SYNC;
 
-        motor1.setPWM(leftPWM - syncComputation);
-        motor2.setPWM(-(rightPWM + syncComputation));
+        motor1.setPWM(leftPWM - headingCorrection - syncCorrection);
+        motor2.setPWM(-(rightPWM + headingCorrection + syncCorrection));
 
         // Debug
         Serial.print("L: ");
         Serial.print(leftPos);
         Serial.print("  R: ");
-        Serial.println(rightPos);
+        Serial.print(rightPos);
+        Serial.print("  H: ");
+        Serial.print(mpu.getAngleZ());
+        Serial.print("  TH: ");
+        Serial.println(targetHeading);
     }
 }
 
