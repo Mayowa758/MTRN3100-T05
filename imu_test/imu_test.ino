@@ -1,48 +1,123 @@
-// #include "Encoder.hpp"
-// #include "Motor.hpp"
-// #include "PIDController.hpp"
-// #include "BangBangController.hpp"
-// #include <MPU6050_light.h>
+#include "DualEncoder.hpp"
+#include "Motor.hpp"
+#include "PIDController.hpp"
+#include <MPU6050_light.h>
 
-// #define MOT1PWM 11
-// #define MOT1DIR 12
-// mtrn3100::Motor motor1(MOT1PWM,MOT1DIR);
+#define MOT1PWM 11
+#define MOT1DIR 12
+mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
 
-// #define MOT2PWM 9
-// #define MOT2DIR 10
-// mtrn3100::Motor motor2(MOT2PWM,MOT2DIR);
+#define MOT2PWM 9
+#define MOT2DIR 10
+mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
 
-// #define EN_A 2
-// #define EN_B 7
-// mtrn3100::Encoder encoder(EN_A, EN_B);
+// Encoder pins
+#define EN_A  2
+#define EN_B  7
+#define EN_A2 3
+#define EN_B2 8
 
-// #define EN_A2 3 
-// #define EN_B2 8
-// mtrn3100::Encoder encoder2(EN_A2, EN_B2);
+mtrn3100::DualEncoder encoder(EN_A, EN_B, EN_A2, EN_B2);
 
-// mtrn3100::BangBangController controller1(255,0);
-// mtrn3100::BangBangController controller2(255,0);
-// // mtrn3100::PIDController controller(100, 0, 0);
+// PID Controllers
+mtrn3100::PIDController controller1(25, 0, 0);
+mtrn3100::PIDController controller2(25, 0, 0);
 
-
-// // IMU Setup
+// IMU
 // MPU6050 mpu(Wire);
-// int return_position = 0;
-// int count = 0;
+MPU6050 mpu(Wire);
 
-// enum direction {left, right};
+float targetHeading = 0.0; 
+const float K_HEADING = 5.0;
 
-// void setup() {
-//   Serial.begin(9600);
-//   controller1.zeroAndSetTarget(encoder.getRotation(), 0.5); // Set the target as 2 Radians
-//   controller2.zeroAndSetTarget(encoder.getRotation(), 0.5); // Set the target as 2 Radians
-//   // // for imu sensor
-//   Wire.begin();
-//   mpu.begin();
-//   mpu.calcOffsets();
-//   int return_position = mpu.getAngleZ();
+const float WHEEL_RADIUS = 0.028f;   // metres
+const float WHEEL_BASE   = 0.145f;   // distance between wheels
 
-//   Serial.println("Done");
+// mtrn3100::EncoderOdometry odom(WHEEL_RADIUS, WHEEL_BASE);
+
+unsigned long lastPIDTime = 0;
+const unsigned long PID_INTERVAL = 10000;   // 10 ms
+
+void setup() {
+    Serial.begin(9600);
+
+    Wire.begin();
+    
+    // Robot must be completely still during setup to calibrate the gyroscope
+    Serial.println("Hello");
+
+    // mpu.begin();
+    // Serial.println("mpu.begin() returned");
+    // Serial.println("Done");
+    // mpu.calcOffsets();
+
+    controller1.zeroAndSetTarget(encoder.getLeftRotation(), 100);
+    controller2.zeroAndSetTarget(-encoder.getRightRotation(), 100);
+
+    Serial.println("Done");
+
+    // targetHeading = mpu.getAngleZ();
+    // Serial.println(targetHeading);
+}
+
+void loop() {
+
+    unsigned long currentTime = micros();
+
+    if (currentTime - lastPIDTime >= PID_INTERVAL) {
+
+        lastPIDTime = currentTime;
+
+        // Current wheel positions
+        float leftPos  = encoder.getLeftRotation();
+        float rightPos = -encoder.getRightRotation();
+
+        // Independent PID outputs
+        float leftPWM  = controller1.compute(leftPos);
+        float rightPWM = controller2.compute(rightPos);
+
+        // float headingError = targetHeading - mpu.getAngleZ();
+        // float headingCorrection = K_HEADING * headingError;
+
+        float syncError = leftPos - rightPos;
+        float syncComputation = syncError * 57;
+
+        motor1.setPWM(leftPWM - syncComputation);
+        motor2.setPWM(-(rightPWM + syncComputation));
+
+        // Debug
+        Serial.print("L: ");
+        Serial.print(leftPos);
+        Serial.print("  R: ");
+        Serial.println(rightPos);
+    }
+}
+
+
+    // float actual_position2 = -encoder2.getRotation(); 
+    // float output2 = controller2.compute(actual_position2);
+    // // output2 = constrain(output2, -MAX_SPEED, MAX_SPEED);
+    // motor2.setPWM(-output2);
+    // Serial.println(encoder1.count);
+    // Serial.println((encoder1.getRotation()));
+    // Serial.println("");
+    // delay(1000);
+
+    // float pos1 = encoder1.getRotation();
+    // float pos2 = -encoder2.getRotation();
+
+    // float output1 = controller1.compute(pos1);
+    // float output2 = controller2.compute(pos2);
+
+    // // Cross-coupling: If pos1 > pos2, the robot is veering right. 
+    // // We slow down motor 1 and speed up motor 2 slightly to compensate.
+    // float sync_correction = (pos1 - pos2) * 10.0; // Tune this multiplier (10.0) if needed
+
+    // motor1.setPWM(output1 - sync_correction);
+    // motor2.setPWM(-(output2 + sync_correction));
+
+    // delayMicroseconds(2000);
+
 // }
 
 // void loop() {
@@ -106,73 +181,73 @@
 // //   delay(1000);
 // // }
 
-#include "Motor.hpp"
+// #include "Motor.hpp"
 
-#define MOT1PWM 11
-#define MOT1DIR 12
-mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
+// #define MOT1PWM 11
+// #define MOT1DIR 12
+// mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
 
-#define MOT2PWM 9
-#define MOT2DIR 10
-mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
+// #define MOT2PWM 9
+// #define MOT2DIR 10
+// mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
 
-enum direction { left, right };
+// enum direction { left, right };
 
-const int TURN_SPEEDL = 100;
-const int TURN_SPEEDR = 100;
-const int TURN_TIME = 1000; // ms, tune experimentally
+// const int TURN_SPEEDL = 100;
+// const int TURN_SPEEDR = 100;
+// const int TURN_TIME = 1000; // ms, tune experimentally
 
-void turning(direction dir) {
-  switch (dir) {
-    case left:
-      motor1.setPWM(-TURN_SPEEDL);
-      motor2.setPWM(TURN_SPEEDR);
-      break;
+// void turning(direction dir) {
+//   switch (dir) {
+//     case left:
+//       motor1.setPWM(-TURN_SPEEDL);
+//       motor2.setPWM(TURN_SPEEDR);
+//       break;
 
-    case right:
-      motor1.setPWM(TURN_SPEEDL);
-      motor2.setPWM(-TURN_SPEEDR);
-      break;
-  }
-}
+//     case right:
+//       motor1.setPWM(TURN_SPEEDL);
+//       motor2.setPWM(-TURN_SPEEDR);
+//       break;
+//   }
+// }
 
-void stopMotors() {
-  motor1.setPWM(0);
-  motor2.setPWM(0);
-}
+// void stopMotors() {
+//   motor1.setPWM(0);
+//   motor2.setPWM(0);
+// }
 
-void setup() {
-  Serial.begin(9600);
-  Serial.println("Starting...");
-}
+// void setup() {
+//   Serial.begin(9600);
+//   Serial.println("Starting...");
+// }
 
-void loop() {
+// void loop() {
 
-  Serial.println("Turning left 4 times");
+//   Serial.println("Turning left 4 times");
 
-  for (int i = 0; i < 4; i++) {
-    turning(left);
-    delay(TURN_TIME);
+//   for (int i = 0; i < 4; i++) {
+//     turning(left);
+//     delay(TURN_TIME);
 
-    stopMotors();
-    delay(500);
-  }
+//     stopMotors();
+//     delay(500);
+//   }
 
-  delay(1000);
+//   delay(1000);
 
-  Serial.println("Turning right 4 times");
+//   Serial.println("Turning right 4 times");
 
-  for (int i = 0; i < 4; i++) {
-    turning(right);
-    delay(TURN_TIME);
+//   for (int i = 0; i < 4; i++) {
+//     turning(right);
+//     delay(TURN_TIME);
 
-    stopMotors();
-    delay(500);
-  }
+//     stopMotors();
+//     delay(500);
+//   }
 
-  stopMotors();
+//   stopMotors();
 
-  while (true) {
-    // stop program
-  }
-}
+//   while (true) {
+//     // stop program
+//   }
+// }

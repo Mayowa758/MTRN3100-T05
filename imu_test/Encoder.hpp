@@ -3,54 +3,57 @@
 #include <Arduino.h>
 #include "math.h"
 
-
 namespace mtrn3100 {
 
-
-// The encoder class is a simple interface which counts and stores an encoders count.
-// Encoder pin 1 is attached to the interupt on the arduino and used to trigger the count.
-// Encoder pin 2 is attached to any digital pin and used to derrive rotation direction.
-// The count is stored as a volatile variable due to the high frequency updates. 
 class Encoder {
 public:
     Encoder(uint8_t enc1, uint8_t enc2) : encoder1_pin(enc1), encoder2_pin(enc2) {
-        instance = this;  // Store the instance pointer
+        // Assign this instance to the correct static pointer based on the interrupt pin
+        if (encoder1_pin == 2) {
+            instancePin2 = this;
+            attachInterrupt(digitalPinToInterrupt(encoder1_pin), readEncoderISRPin2, RISING);
+        } else if (encoder1_pin == 3) {
+            instancePin3 = this;
+            attachInterrupt(digitalPinToInterrupt(encoder1_pin), readEncoderISRPin3, RISING);
+        }
+        
         pinMode(encoder1_pin, INPUT_PULLUP);
         pinMode(encoder2_pin, INPUT_PULLUP);
-
-        // TODO: attach the interrupt on pin one such that it calls the readEncoderISR function on a rising edge
-        attachInterrupt(digitalPinToInterrupt(encoder1_pin), readEncoderISR, RISING);
     }
-
 
     // Encoder function used to update the encoder
     void readEncoder() {
-        noInterrupts();
-
-        // NOTE: DO NOT PLACE SERIAL PRINT STATEMENTS IN THIS FUNCTION
-        // NOTE: DO NOT CALL THIS FUNCTION MANUALLY IT WILL ONLY WORK IF CALLED BY THE INTERRUPT
-        // TODO: Increase or Decrease the count by one based on the reading on encoder pin 2
+        // Note: No need to call noInterrupts() inside the ISR, 
+        // AVR microcontrollers disable interrupts automatically while running an ISR.
         if (digitalRead(encoder2_pin) == HIGH) {
             count++;
         } else {
             count--;
         }
-
-        interrupts();
     }
 
-    // Helper function which to convert encouder count to radians
+    // Helper function to convert encoder count to radians
     float getRotation() {
+        // Protect reading the multi-byte volatile long variable from being corrupted mid-read
+        noInterrupts();
+        long currentCount = count;
+        interrupts();
 
-        // TODO: Convert encoder count to radians
-
-        return (count / 1500) * 2 * PI;
+        // Ensure floating point math by using 1500.0 instead of 1500
+        return (static_cast<float>(currentCount) / 730) * 2.0 * PI;
     }
 
 private:
-    static void readEncoderISR() {
-        if (instance != nullptr) {
-            instance->readEncoder();
+    // Separate ISRs for each hardware interrupt pin
+    static void readEncoderISRPin2() {
+        if (instancePin2 != nullptr) {
+            instancePin2->readEncoder();
+        }
+    }
+
+    static void readEncoderISRPin3() {
+        if (instancePin3 != nullptr) {
+            instancePin3->readEncoder();
         }
     }
 
@@ -59,15 +62,19 @@ public:
     const uint8_t encoder2_pin;
     volatile int8_t direction;
     float position = 0;
-    uint16_t counts_per_revolution = 0; //TODO: Identify how many encoder counts are in one rotation
+    uint16_t counts_per_revolution = 693; 
     volatile long count = 0;
     uint32_t prev_time;
     bool read = false;
 
 private:
-    static Encoder* instance;
+    // Unique static pointers for the two hardware interrupt pins on the Nano
+    static Encoder* instancePin2;
+    static Encoder* instancePin3;
 };
 
-Encoder* Encoder::instance = nullptr;
+// Initialize static members
+Encoder* Encoder::instancePin2 = nullptr;
+Encoder* Encoder::instancePin3 = nullptr;
 
 }  // namespace mtrn3100

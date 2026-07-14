@@ -25,6 +25,10 @@ public:
 
         prev_error = error;
 
+        // Constrain to standard max motor PWM bounds
+        if (output > 120) output = 120;
+        if (output < -120) output = -120;
+
         return output;
     }
 
