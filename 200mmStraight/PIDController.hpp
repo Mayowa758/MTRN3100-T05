@@ -19,7 +19,7 @@ public:
 
         // TODO: IMPLIMENT PID CONTROLLER
         float proportional = error;
-        integral = integral + error * dt;
+        float integral = integral + error * dt;
         derivative = (error - prev_error) / dt;
         output = kp * proportional + ki * integral + kd * derivative;
 
@@ -60,7 +60,6 @@ private:
     float setpoint = 0;
     float zero_ref = 0;
 
-    
 };
 
 }  // namespace mtrn3100

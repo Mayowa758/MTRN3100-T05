@@ -27,6 +27,7 @@ void loop() {
   Serial.print("Yaw: ");
   Serial.print(mpu.getAngleZ());
   Serial.println(" deg");
+  delay(500);
 }
 
 // Standard Code

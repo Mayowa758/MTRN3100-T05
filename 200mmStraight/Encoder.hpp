@@ -41,7 +41,7 @@ public:
 
     // Helper function which to convert encouder count to radians
     float getRotation() {
-        return (static_cast<float>(count) / 1400.0) * 2.0 * PI;
+        return (static_cast<float>(count) / 1500.0) * 2.0 * PI;
     }
 
 private:

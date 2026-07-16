@@ -21,8 +21,8 @@ mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
 mtrn3100::DualEncoder encoder(EN_A, EN_B, EN_A2, EN_B2);
 
 // PID Controllers
-mtrn3100::PIDController controller1(14, 0, 0.3);
-mtrn3100::PIDController controller2(14, 0, 0.3);
+mtrn3100::PIDController controller1(30, 0, 0.3);
+mtrn3100::PIDController controller2(30, 0, 0.3);
 
 bool finishedDrive = false;
 bool finishedTurn = false;
@@ -32,11 +32,11 @@ MPU6050 mpu(Wire);
 
 float targetHeading = 0.0; 
 const float K_HEADING = 27;
-const float K_SYNC = -1.1;
+const float K_SYNC = 1.1;
 
 const float WHEEL_RADIUS = 0.017f;   // metres
 const float WHEEL_BASE   = 0.145f;   // distance between wheels
-float targetDistance = 1.0f; // metres
+float targetDistance = 1.1f; // metres
 float targetAngle = targetDistance / WHEEL_RADIUS;
 
 mtrn3100::EncoderOdometry odom(WHEEL_RADIUS, WHEEL_BASE);
@@ -84,17 +84,18 @@ void loop() {
         float rightPWM = controller2.compute(rightPos);
 
         float headingError = targetHeading - mpu.getAngleZ();
-        float headingCorrection = K_HEADING * headingError;
+        // float headingCorrection = K_HEADING * headingError;
+        float headingCorrection = 0;
         headingCorrection = constrain(headingCorrection, -60, 60);
 
         
 
         float syncError = leftPos - rightPos;
         float syncCorrection = syncError * K_SYNC;
-
+        
         motor1.setPWM(leftPWM - headingCorrection - syncCorrection);
         motor2.setPWM(-(rightPWM + headingCorrection + syncCorrection));
-
+        
         // Debug
         Serial.print("L: ");
         Serial.print(leftPos);
