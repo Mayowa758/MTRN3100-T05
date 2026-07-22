@@ -47,7 +47,7 @@ const char commandString[] = "fflfrflf";
 
 // ---------------- ROBOT SETTINGS ----------------
 
-const float CELL_DISTANCE_M = 0.190;
+const float CELL_DISTANCE_M = 0.195;
 const float WHEEL_RADIUS_M = 0.017;
 
 // Forward movement settings
