@@ -36,7 +36,7 @@ const float K_SYNC = 1.1;
 
 const float WHEEL_RADIUS = 0.017f;   // metres
 const float WHEEL_BASE   = 0.145f;   // distance between wheels
-float targetDistance = 1.1f; // metres
+float targetDistance = 1.09f; // metres
 float targetAngle = targetDistance / WHEEL_RADIUS;
 
 mtrn3100::EncoderOdometry odom(WHEEL_RADIUS, WHEEL_BASE);
@@ -84,8 +84,7 @@ void loop() {
         float rightPWM = controller2.compute(rightPos);
 
         float headingError = targetHeading - mpu.getAngleZ();
-        // float headingCorrection = K_HEADING * headingError;
-        float headingCorrection = 0;
+        float headingCorrection = K_HEADING * headingError;
         headingCorrection = constrain(headingCorrection, -60, 60);
 
         
