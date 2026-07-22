@@ -1,230 +1,420 @@
+/*
+ * MTRN3100 Week 8 - Part 4: Chaining Movements
+ *
+ * Generative AI assistance was used in developing this code.
+ *
+ * Commands:
+ * f = forward one 180 mm cell
+ * l = turn left 90 degrees
+ * r = turn right 90 degrees
+ */
+
+#include <Wire.h>
+#include <MPU6050_light.h>
 #include "Motor.hpp"
 #include "DualEncoder.hpp"
-#include "PIDController.hpp"
-#include <MPU6050_light.h>
+
+// ---------------- PINS ----------------
+
 #define MOT1PWM 11
 #define MOT1DIR 12
-mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
-
 #define MOT2PWM 9
 #define MOT2DIR 10
+
+#define ENC1A 2
+#define ENC1B 7
+#define ENC2A 3
+#define ENC2B 8
+
+// ---------------- OBJECTS ----------------
+
+mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
 mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
 
-#define EN_A  2
-#define EN_B  7
-#define EN_A2 3
-#define EN_B2 8
-mtrn3100::DualEncoder encoder(EN_A, EN_B, EN_A2, EN_B2);
-mtrn3100::PIDController leftDrive(30, 0, 0.3);
-mtrn3100::PIDController rightDrive(30, 0, 0.3);
-mtrn3100::PIDController headingHold(1.5f, 0.0f, 0.05f);
+mtrn3100::DualEncoder encoder(
+    ENC1A,
+    ENC1B,
+    ENC2A,
+    ENC2B
+);
 
 MPU6050 mpu(Wire);
-const float WHEEL_RADIUS   = 0.016f;
-const float CELL_SIZE      = 0.18f;
-const float K_HEADING      = 27.0f;
-const float K_SYNC         = 1.1f;
 
-// 容差/TOLERANCE
-const float DRIVE_TOLERANCE = 0.05f;
-const float TURN_TOLERANCE  = 3.0f;
+// ---------------- COMMAND STRING ----------------
 
-// PWM调节
-const int16_t MAX_PWM       = 150;
-const int16_t MIN_DRIVE_PWM = 45;
-const int16_t MIN_TURN_PWM  = 50;
+// Replace this on marking day.
+const char commandString[] = "fflfrflf";
 
-const unsigned long DRIVE_SETTLE_TIME_MS = 200;
-const unsigned long TURN_SETTLE_TIME_MS = 250;
+// ---------------- ROBOT SETTINGS ----------------
 
-const int MOTOR2_TURN_SIGN = -1;
+const float CELL_DISTANCE_M = 0.190;
+const float WHEEL_RADIUS_M = 0.017;
 
-const float TURN_ANGLE_DEG = 90.0f;
+// Forward movement settings
+const int FORWARD_PWM = 85;
+const int MAX_FORWARD_CORRECTION = 35;
+const float HEADING_KP = 2.0;
 
-const float TURN_SIGN = -1.0f;
+// Turning settings
+const int MAX_TURN_PWM = 70;
+const int MEDIUM_TURN_PWM = 48;
+const int SLOW_TURN_PWM = 30;
 
-const char* commandString = "lfrfflfr";    //change to test
+const float TURN_TOLERANCE = 5.0;
 
-float targetHeading = 0.0f;
-bool ready = false;
+// Distance tolerance
+const float DISTANCE_TOLERANCE = 0.15;
+
+// Time settings
+const unsigned long DRIVE_TIMEOUT = 6000;
+const unsigned long TURN_TIMEOUT = 6000;
+const unsigned long SETTLE_TIME = 150;
+
+// ---------------- GLOBAL VARIABLES ----------------
+
+float targetHeading = 0;
+
+bool systemReady = false;
 bool sequenceFailed = false;
 
-float applyMinimumPWM(float command, int16_t minimumPWM) {
-    if (command > 0.0f && command < minimumPWM) return minimumPWM;
-    if (command < 0.0f && command > -minimumPWM) return -minimumPWM;
-    return command;
-}
+int commandIndex = 0;
 
-bool driveForwardCell();
-bool turnRelative(float deltaDeg);
+// ---------------- BASIC FUNCTIONS ----------------
 
 void stopMotors() {
     motor1.setPWM(0);
     motor2.setPWM(0);
 }
 
-bool commandStringIsValid() {
-    if (strlen(commandString) != 8) return false;
-    for (size_t i = 0; i < 8; ++i) {
-        if (commandString[i] != 'f' && commandString[i] != 'l' && commandString[i] != 'r') {
-            return false;
-        }
+float wrapAngle(float angle) {
+    while (angle > 180.0) {
+        angle -= 360.0;
     }
-    return true;
+
+    while (angle < -180.0) {
+        angle += 360.0;
+    }
+
+    return angle;
 }
+
+/*
+ * Forward movement:
+ *
+ * Motor 2 uses the opposite sign because the two motors
+ * are mounted in opposite physical directions.
+ */
+void setForwardPWM(int leftPWM, int rightPWM) {
+    leftPWM = constrain(leftPWM, -120, 120);
+    rightPWM = constrain(rightPWM, -120, 120);
+
+    motor1.setPWM(leftPWM);
+    motor2.setPWM(-rightPWM);
+}
+
+/*
+ * In-place turning:
+ *
+ * Both motors receive the same sign because the motors
+ * are mounted in opposite directions.
+ */
+void setTurnPWM(int pwm) {
+    pwm = constrain(
+        pwm,
+        -MAX_TURN_PWM,
+        MAX_TURN_PWM
+    );
+
+    motor1.setPWM(-pwm);
+    motor2.setPWM(-pwm);
+}
+
+// ---------------- FORWARD MOVEMENT ----------------
+
+bool driveForwardOneCell() {
+    float targetRotation =
+        CELL_DISTANCE_M / WHEEL_RADIUS_M;
+
+    float leftStart =
+        encoder.getLeftRotation();
+
+    float rightStart =
+        -encoder.getRightRotation();
+
+    unsigned long startTime = millis();
+    unsigned long settledSince = 0;
+
+    while (millis() - startTime < DRIVE_TIMEOUT) {
+        mpu.update();
+
+        float leftTravel =
+            encoder.getLeftRotation() - leftStart;
+
+        float rightTravel =
+            (-encoder.getRightRotation()) - rightStart;
+
+        float averageTravel =
+            (leftTravel + rightTravel) / 2.0;
+
+        float distanceError =
+            targetRotation - averageTravel;
+
+        float headingError =
+            wrapAngle(
+                targetHeading - mpu.getAngleZ()
+            );
+
+        int headingCorrection =
+            constrain(
+                (int)(HEADING_KP * headingError),
+                -MAX_FORWARD_CORRECTION,
+                MAX_FORWARD_CORRECTION
+            );
+
+        if (fabs(distanceError) <= DISTANCE_TOLERANCE) {
+            stopMotors();
+
+            if (settledSince == 0) {
+                settledSince = millis();
+            }
+
+            if (millis() - settledSince >= SETTLE_TIME) {
+                Serial.println("Forward complete");
+                return true;
+            }
+        } else {
+            settledSince = 0;
+
+            int leftPWM =
+                FORWARD_PWM - headingCorrection;
+
+            int rightPWM =
+                FORWARD_PWM + headingCorrection;
+
+            setForwardPWM(
+                leftPWM,
+                rightPWM
+            );
+        }
+
+        delay(10);
+    }
+
+    stopMotors();
+
+    Serial.println("Forward timeout");
+
+    return false;
+}
+
+// ---------------- TURNING ----------------
+
+bool turnToHeading(float newHeading) {
+    targetHeading = newHeading;
+
+    unsigned long startTime = millis();
+    unsigned long settledSince = 0;
+
+    while (millis() - startTime < TURN_TIMEOUT) {
+        mpu.update();
+
+        float currentHeading =
+            mpu.getAngleZ();
+
+        float error =
+            wrapAngle(
+                targetHeading - currentHeading
+            );
+
+        Serial.print("Heading: ");
+        Serial.print(currentHeading);
+
+        Serial.print(" Target: ");
+        Serial.print(targetHeading);
+
+        Serial.print(" Error: ");
+        Serial.println(error);
+
+        /*
+         * Stop when the robot is within ±5 degrees.
+         */
+        if (fabs(error) <= TURN_TOLERANCE) {
+            stopMotors();
+
+            if (settledSince == 0) {
+                settledSince = millis();
+            }
+
+            if (millis() - settledSince >= SETTLE_TIME) {
+                Serial.println("Turn complete");
+
+                return true;
+            }
+        } else {
+            settledSince = 0;
+
+            int turnPWM;
+
+            /*
+             * Fast when far away,
+             * medium when closer,
+             * slow near target.
+             */
+            if (fabs(error) > 35.0) {
+                turnPWM = MAX_TURN_PWM;
+            } else if (fabs(error) > 15.0) {
+                turnPWM = MEDIUM_TURN_PWM;
+            } else {
+                turnPWM = SLOW_TURN_PWM;
+            }
+
+            /*
+             * Choose direction using the error sign.
+             */
+            if (error < 0) {
+                turnPWM = -turnPWM;
+            }
+
+            setTurnPWM(turnPWM);
+        }
+
+        delay(10);
+    }
+
+    stopMotors();
+
+    Serial.println("Turn timeout");
+
+    return false;
+}
+
+bool turnLeft90() {
+    return turnToHeading(
+        targetHeading + 90.0
+    );
+}
+
+bool turnRight90() {
+    return turnToHeading(
+        targetHeading - 90.0
+    );
+}
+
+// ---------------- SETUP ----------------
 
 void setup() {
+    Serial.begin(9600);
+
     Wire.begin();
 
-    byte imuStatus = mpu.begin();
+    stopMotors();
+
+    Serial.println("Starting Part 4");
+
+    delay(1000);
+
+    byte imuStatus =
+        mpu.begin();
+
+    Serial.print("IMU status: ");
+    Serial.println(imuStatus);
+
     if (imuStatus != 0) {
-        stopMotors();
+        Serial.println("IMU connection failed");
+
         return;
     }
+
+    Serial.println(
+        "Keep robot completely still during calibration"
+    );
+
+    delay(1000);
+
     mpu.calcOffsets(true, true);
+
     delay(500);
+
     mpu.update();
 
-    if (!commandStringIsValid()) {
-        stopMotors();
-        return;
-    }
+    targetHeading =
+        mpu.getAngleZ();
 
-    targetHeading = mpu.getAngleZ();
-    ready = true;
+    Serial.print("Initial heading: ");
+    Serial.println(targetHeading);
+
+    Serial.print("Commands: ");
+    Serial.println(commandString);
+
+    /*
+     * Time to place the robot down.
+     */
+    delay(2000);
+
+    systemReady = true;
 }
+
+// ---------------- MAIN LOOP ----------------
 
 void loop() {
-    static size_t index = 0;
-
-    if (!ready || sequenceFailed) {
+    if (!systemReady || sequenceFailed) {
         stopMotors();
+
         return;
     }
 
-    if (commandString[index] == '\0') {
+    if (commandIndex >= 8) {
         stopMotors();
+
         return;
     }
 
-    char cmd = commandString[index];
+    char command =
+        commandString[commandIndex];
 
-    bool actionSucceeded = false;
-    switch (cmd) {
-        case 'f':
-            actionSucceeded = driveForwardCell();
-            break;
-        case 'l':
-            actionSucceeded = turnRelative(-TURN_SIGN * TURN_ANGLE_DEG);
-            break;
-        case 'r':
-            actionSucceeded = turnRelative(TURN_SIGN * TURN_ANGLE_DEG);
-            break;
-        default:
-            actionSucceeded = false;
-            break;
-    }
+    Serial.print("Running command ");
+    Serial.print(commandIndex + 1);
+    Serial.print(": ");
+    Serial.println(command);
 
-    if (!actionSucceeded) {
+    bool success = false;
+
+    if (command == 'f') {
+        success =
+            driveForwardOneCell();
+    } else if (command == 'l') {
+        success =
+            turnLeft90();
+    } else if (command == 'r') {
+        success =
+            turnRight90();
+    } else {
+        Serial.println("Invalid command");
+
         sequenceFailed = true;
+
         stopMotors();
+
         return;
     }
 
-    index++;
-}
+    stopMotors();
 
-bool driveForwardCell() {
-    float targetAngle = CELL_SIZE / WHEEL_RADIUS;
+    if (!success) {
+        Serial.println("Sequence stopped");
 
-    leftDrive.zeroAndSetTarget(encoder.getLeftRotation(), targetAngle);
-    rightDrive.zeroAndSetTarget(-encoder.getRightRotation(), targetAngle);
+        sequenceFailed = true;
 
-    unsigned long lastTime = micros();
-    const unsigned long interval = 10000;
-    unsigned long moveStart = millis();
-    const unsigned long DRIVE_TIMEOUT_MS = 3000;
-    unsigned long withinToleranceSince = 0;
-
-    while (true) {
-        mpu.update();
-        unsigned long now = micros();
-        if (now - lastTime < interval) continue;
-        lastTime = now;
-
-        float leftPos  = encoder.getLeftRotation();
-        float rightPos = -encoder.getRightRotation();
-
-        float leftPWM  = leftDrive.compute(leftPos);
-        float rightPWM = rightDrive.compute(rightPos);
-
-        float headingError = targetHeading - mpu.getAngleZ();
-        float headingCorrection = constrain(K_HEADING * headingError, -60.0f, 60.0f);
-
-        float syncError = leftPos - rightPos;
-        float syncCorrection = syncError * K_SYNC;
-        float leftCmd  = constrain(leftPWM - headingCorrection - syncCorrection, (float)-MAX_PWM, (float)MAX_PWM);
-        float rightCmd = constrain(-(rightPWM + headingCorrection + syncCorrection), (float)-MAX_PWM, (float)MAX_PWM);
-        leftCmd = applyMinimumPWM(leftCmd, MIN_DRIVE_PWM);
-        rightCmd = applyMinimumPWM(rightCmd, MIN_DRIVE_PWM);
-        motor1.setPWM(leftCmd);
-        motor2.setPWM(rightCmd);
-
-        bool withinTolerance = fabs(leftDrive.getError()) < DRIVE_TOLERANCE &&
-                               fabs(rightDrive.getError()) < DRIVE_TOLERANCE;
-        if (withinTolerance) {
-            stopMotors();
-            if (withinToleranceSince == 0) withinToleranceSince = millis();
-            if (millis() - withinToleranceSince >= DRIVE_SETTLE_TIME_MS) {
-                return true;
-            }
-        } else {
-            withinToleranceSince = 0;
-        }
-
-        if (millis() - moveStart >= DRIVE_TIMEOUT_MS) {
-            stopMotors();
-            return false;
-        }
+        return;
     }
-}
 
-bool turnRelative(float deltaDeg) {
-    targetHeading += deltaDeg;
-    headingHold.zeroAndSetTarget(0.0f, targetHeading);
+    commandIndex++;
 
-    unsigned long turnStart = millis();
-    const unsigned long TURN_TIMEOUT_MS = 2000;
-    unsigned long withinToleranceSince = 0;
-    unsigned long lastControlTime = micros();
-    const unsigned long CONTROL_INTERVAL_US = 10000;
+    delay(200);
 
-    while (true) {
-        mpu.update();
+    if (commandIndex >= 8) {
+        Serial.println("All 8 commands completed");
 
-        unsigned long now = micros();
-        if (now - lastControlTime < CONTROL_INTERVAL_US) continue;
-        lastControlTime = now;
-
-        float headingError = targetHeading - mpu.getAngleZ();
-        if (fabs(headingError) < TURN_TOLERANCE) {
-            stopMotors();
-            if (withinToleranceSince == 0) withinToleranceSince = millis();
-            if (millis() - withinToleranceSince >= TURN_SETTLE_TIME_MS) {
-                return true;
-            }
-        } else {
-            withinToleranceSince = 0;
-            float output = headingHold.compute(mpu.getAngleZ());
-            output = constrain(output, (float)-MAX_PWM, (float)MAX_PWM);
-            output = applyMinimumPWM(output, MIN_TURN_PWM);
-            motor1.setPWM(output);
-            motor2.setPWM(MOTOR2_TURN_SIGN * output);
-        }
-
-        if (millis() - turnStart >= TURN_TIMEOUT_MS) {
-            stopMotors();
-            return false;
-        }
+        stopMotors();
     }
 }
