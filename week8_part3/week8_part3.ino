@@ -1,6 +1,8 @@
+#include "DualEncoder.hpp"
 #include "Motor.hpp"
 #include "PIDController.hpp"
 #include <MPU6050_light.h>
+#include "EncoderOdometry.hpp"
 
 #define MOT1PWM 11
 #define MOT1DIR 12
@@ -10,77 +12,290 @@ mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
 #define MOT2DIR 10
 mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
 
+// Encoder pins
+#define EN_A  2
+#define EN_B  7
+#define EN_A2 3
+#define EN_B2 8
+
+mtrn3100::DualEncoder encoder(EN_A, EN_B, EN_A2, EN_B2);
+
+// PID Controllers
+mtrn3100::PIDController controller1(3, 0, 0);
+mtrn3100::PIDController controller2(3, 0, 0);
+
+
+// Controller for Heading Control
+mtrn3100::PIDController headingController(8, 0, 0);
+
+const float MAX_SPEED = 80;
+
+// IMU
 MPU6050 mpu(Wire);
 
-// 转向PID/TURN PID。转得慢可增大Kp；来回摆动可减小Kp或增大Kd。/ Increase Kp for a slow turn; reduce Kp or increase Kd for overshoot.
-mtrn3100::PIDController headingController(1.5f, 0.0f, 0.05f);
-const float TURN_ANGLE_DEG = 90.0f;
-// PWM调节。MAX控制最高转速；MIN应为刚好能原地转动的最低PWM。/ MAX limits turn speed; MIN should be the lowest PWM 
-const int16_t MAX_PWM = 150;
-const int16_t MIN_TURN_PWM = 50;
-// 停车容差/TOLERANCE。抖动可略增但必须小于5。/ increase slightly for noise, but stay below 5.
-const float STOP_TOLERANCE_DEG = 3.0f;
-// 控制周期/CONTROL PERIOD: 噪声大可增大；响应迟缓可小幅减小。/ Increase for noisy control; reduce slightly if response is sluggish.
-const unsigned long CONTROL_INTERVAL_US = 10000;
+float targetHeading = 0.0; 
+const float K_HEADING = 25;
+const float K_SYNC = 1.1;
 
-// 方向调试/DIRECTION。 开机必须顺时针90度；若变成逆时针，只改-1为+1。 / change +1 if it turns anticlockwise.
-const float TURN_SIGN = -1.0f;
-const int MOTOR2_TURN_SIGN = -1;  // 原地转向符号/MOTOR SIGN
+const float WHEEL_RADIUS = 0.017f;   // metres
+const float WHEEL_BASE   = 0.145f;   // distance between wheels
+float targetDistance = 1.1f; // metres
+float toleranceDegree = 0.5;
 
-float targetHeading = 0.0f;
-bool imuReady = false;
-unsigned long lastControlTime = 0;
 
-void rotate(float pwm) {
-    motor1.setPWM(pwm);
-    motor2.setPWM(MOTOR2_TURN_SIGN * pwm);
-}
+bool flag = false;
+mtrn3100::EncoderOdometry odom(WHEEL_RADIUS, WHEEL_BASE);
+
+unsigned long lastPIDTime = 0;
+const unsigned long PID_INTERVAL = 10000;   // 10 ms
 
 void setup() {
+    Serial.begin(9600);
     Wire.begin();
 
-    byte imuStatus = mpu.begin();
-    if (imuStatus != 0) {
-        rotate(0);
-        return;
-    }
+    motor1.setPWM(0);
+    motor2.setPWM(0);
+    
+    // Robot must be completely still during setup to calibrate the gyroscope
+    Serial.println("Hello");
+
+    mpu.begin();
+    Serial.println("mpu.begin() returned");
+    delay(200);
     mpu.calcOffsets(true, true);
     delay(500);
-    mpu.update();
 
-    float startHeading = mpu.getAngleZ();
-    targetHeading = startHeading + TURN_SIGN * TURN_ANGLE_DEG;
-
-    headingController.zeroAndSetTarget(0.0f, targetHeading);
-
-    imuReady = true;
+    // controller1.zeroAndSetTarget(encoder.getLeftRotation(), targetAngle);
+    // controller2.zeroAndSetTarget(-encoder.getRightRotation(), targetAngle);
+    targetHeading = mpu.getAngleZ() + 90.0;
+    headingController.zeroAndSetTarget(mpu.getAngleZ(), targetHeading);
+    Serial.println("Done");
+    // mpu.getAngleZ();
+    Serial.println(targetHeading);
 }
 
 void loop() {
+    
+    unsigned long currentTime = micros();
     mpu.update();
 
-    if (!imuReady) {
-        rotate(0);
-        return;
+    if (currentTime - lastPIDTime >= PID_INTERVAL) {
+
+        lastPIDTime = currentTime;
+        float currentHeading = mpu.getAngleZ();
+
+        float headingError = targetHeading - currentHeading;
+
+        while (headingError > 180)
+            headingError -= 360;
+
+        while (headingError < -180)
+            headingError += 360;
+
+        // float headingCorrection = K_HEADING * headingError;
+        float leftPos  = encoder.getLeftRotation();
+        float rightPos = -encoder.getRightRotation();
+
+        if (fabs(headingError) <= toleranceDegree) {
+            Serial.println("I'm here!");
+            rotate(0, 0, 0);
+            return;
+        }
+
+        float output = headingController.compute(currentHeading);
+        rotate(-output, output, 1);
+
+        // // Debug
+        Serial.print("L: ");
+        Serial.print(leftPos);
+        Serial.print("  R: ");
+        Serial.print(rightPos);
+        Serial.print("  H: ");
+        Serial.print(mpu.getAngleZ());
+        Serial.print("  TH: ");
+        Serial.print(targetHeading);
+        Serial.print("  headingError: ");
+        Serial.print(headingError);
+
+        Serial.print("Output: ");
+        Serial.print(output);
+
+        Serial.print("  Left PWM: ");
+        Serial.print(output);
+
+        Serial.print("  Right PWM: ");
+        Serial.println(-output);
     }
-
-    unsigned long now = micros();
-    if (now - lastControlTime < CONTROL_INTERVAL_US) return;
-    lastControlTime = now;
-
-    float error = targetHeading - mpu.getAngleZ();
-    if (fabs(error) <= STOP_TOLERANCE_DEG) {
-        rotate(0);
-        return;
-    }
-
-    float output = headingController.compute(mpu.getAngleZ());
-    output = constrain(output, (float)-MAX_PWM, (float)MAX_PWM);
-
-    if (fabs(output) < MIN_TURN_PWM) {
-        output = output < 0.0f ? -MIN_TURN_PWM : MIN_TURN_PWM;
-    }
-
-    rotate(output);
-
 }
+
+
+
+void rotate(int l_pwr, int r_pwr, bool turn) {
+    if (turn) {
+        motor1.setPWM(l_pwr);
+        motor2.setPWM(-r_pwr);  
+    }
+    
+    else {
+        motor1.setPWM(0);
+        motor2.setPWM(0);
+    }
+}
+
+    // float actual_position2 = -encoder2.getRotation(); 
+    // float output2 = controller2.compute(actual_position2);
+    // // output2 = constrain(output2, -MAX_SPEED, MAX_SPEED);
+    // motor2.setPWM(-output2);
+    // Serial.println(encoder1.count);
+    // Serial.println((encoder1.getRotation()));
+    // Serial.println("");
+    // delay(1000);
+
+    // float pos1 = encoder1.getRotation();
+    // float pos2 = -encoder2.getRotation();
+
+    // float output1 = controller1.compute(pos1);
+    // float output2 = controller2.compute(pos2);
+
+    // // Cross-coupling: If pos1 > pos2, the robot is veering right. 
+    // // We slow down motor 1 and speed up motor 2 slightly to compensate.
+    // float sync_correction = (pos1 - pos2) * 10.0; // Tune this multiplier (10.0) if needed
+
+    // motor1.setPWM(output1 - sync_correction);
+    // motor2.setPWM(-(output2 + sync_correction));
+
+    // delayMicroseconds(2000);
+
+// }
+
+// void loop() {
+
+//   Serial.println("Hello World");
+  
+// //   motor1.setPWM(controller1.compute(encoder.getRotation()));
+// //   motor2.setPWM(controller2.compute(encoder.getRotation()));
+
+// //   enum direction dir = left;
+// //   // turn left
+// //   Serial.println("We are turning left!");
+// //   while (count < 4) {
+// //     int curr_pos = mpu.getAngleZ();
+// //     Serial.println(curr_pos);
+// //     turning(left);
+// //     if (curr_pos == return_position) {
+// //       count++;
+// //     }
+// //     Serial.println(count);
+// //   }
+
+// //   delay(1000);
+// //   count = 0;
+
+// //   dir = right;
+// //   // turn right
+// //   Serial.println("We are turning right!");
+// //   while (count < 4) {
+// //     int curr_pos = mpu.getAngleZ();
+// //     Serial.println(curr_pos);
+// //     turning(right);
+// //     if (curr_pos == return_position) {
+// //       count++;
+// //     }
+// //     Serial.println(count);
+// //   }
+
+// // }
+
+// // void turning(enum direction dir) {
+// //   switch (dir) {
+// //     case left:
+// //       motor1.setPWM(-100); // need to tune
+// //       motor2.setPWM(100); // need to tune
+// //       break;
+// //     case right:
+// //       motor1.setPWM(100); // need to tune
+// //       motor2.setPWM(-100); // need to tune
+// //       break;
+// //   }
+// }
+
+// // void setup() {
+// //   Serial.begin(9600);
+// //   Serial.println("hi");
+// // }
+
+// // void loop() {
+// //   Serial.println(("this is working"));
+// //   delay(1000);
+// // }
+
+// #include "Motor.hpp"
+
+// #define MOT1PWM 11
+// #define MOT1DIR 12
+// mtrn3100::Motor motor1(MOT1PWM, MOT1DIR);
+
+// #define MOT2PWM 9
+// #define MOT2DIR 10
+// mtrn3100::Motor motor2(MOT2PWM, MOT2DIR);
+
+// enum direction { left, right };
+
+// const int TURN_SPEEDL = 100;
+// const int TURN_SPEEDR = 100;
+// const int TURN_TIME = 1000; // ms, tune experimentally
+
+// void turning(direction dir) {
+//   switch (dir) {
+//     case left:
+//       motor1.setPWM(-TURN_SPEEDL);
+//       motor2.setPWM(TURN_SPEEDR);
+//       break;
+
+//     case right:
+//       motor1.setPWM(TURN_SPEEDL);
+//       motor2.setPWM(-TURN_SPEEDR);
+//       break;
+//   }
+// }
+
+// void stopMotors() {
+//   motor1.setPWM(0);
+//   motor2.setPWM(0);
+// }
+
+// void setup() {
+//   Serial.begin(9600);
+//   Serial.println("Starting...");
+// }
+
+// void loop() {
+
+//   Serial.println("Turning left 4 times");
+
+//   for (int i = 0; i < 4; i++) {
+//     turning(left);
+//     delay(TURN_TIME);
+
+//     stopMotors();
+//     delay(500);
+//   }
+
+//   delay(1000);
+
+//   Serial.println("Turning right 4 times");
+
+//   for (int i = 0; i < 4; i++) {
+//     turning(right);
+//     delay(TURN_TIME);
+
+//     stopMotors();
+//     delay(500);
+//   }
+
+//   stopMotors();
+
+//   while (true) {
+//     // stop program
+//   }
+// }
