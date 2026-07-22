@@ -14,7 +14,7 @@ mtrn3100::Lidar lidar;
 
 //跟墙太慢可增大Kp；冲过目标/振荡可减小Kp或增大Kd。
 // Increase Kp if wall following is slow; reduce Kp or increase Kd for overshoot.
-mtrn3100::PIDController distanceController(0.6f, 0.0f, 0.05f);
+mtrn3100::PIDController distanceController(0.6f, 0.0f, 0.02f);
 
 // 目标为小车前端到墙的距离 / Target is front-of-robot to wall
 const float TARGET_DISTANCE_MM = 100.0f;
@@ -26,7 +26,7 @@ const int16_t MIN_EFFECTIVE_PWM = 45;
 
 // 停车死区/DEADBAND。抖动可增大但不要超过5。
 // Increase for noise, but never above 5mm.
-const float DISTANCE_TOLERANCE_MM = 4.0f;
+const float DISTANCE_TOLERANCE_MM = 10.0f;
 
 // 控制周期/CONTROL PERIOD: 过小会放大噪声，过大会响应迟缓。
 // Too short amplifies noise; too long makes wall following sluggish.
