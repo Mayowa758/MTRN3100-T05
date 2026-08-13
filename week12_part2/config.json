@@ -12,7 +12,7 @@
   "grid_marker_value_min": 35,
   "robot_length_mm": 76.0,
   "robot_width_mm": 85.0,
-  "safety_margin_mm": 0.0,
+  "safety_margin_mm": 1.5,
   "opening_width_mm": 180.0,
   "max_opening_click_distance_mm": 90.0,
   "selection_inside_tolerance_cells": 0.55,

@@ -128,6 +128,13 @@ def main() -> int:
     config = load_config(args.config)
     corners, entrance, exit_point = collect_course_selection(image)
     args.output.mkdir(parents=True, exist_ok=True)
+    save_course_selection(
+        args.output / "last_course_selection.json",
+        image_path,
+        corners,
+        entrance,
+        exit_point,
+    )
     arduino_header = SCRIPT_DIR / "arduino" / "week12_part2" / "GeneratedRoute.h"
     try:
         result = plan_course(image, corners, entrance, exit_point, config)

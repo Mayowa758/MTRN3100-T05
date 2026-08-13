@@ -506,7 +506,10 @@ def boundary_point_for_cell(
 
 
 def build_extended_clearance_map(
-    original: np.ndarray, homography: np.ndarray, config: dict
+    original: np.ndarray,
+    homography: np.ndarray,
+    config: dict,
+    obstacles: Sequence[Obstacle] = (),
 ) -> tuple[np.ndarray, float, float]:
     """Measure wall clearance over the 5 x 5 area plus one outside cell."""
     output_pixels = int(config["rectified_pixels"])
@@ -528,8 +531,24 @@ def build_extended_clearance_map(
         borderValue=(255, 255, 255),
     )
     dark_mask = make_dark_mask(extended, config)
+    for obstacle in obstacles:
+        center = (
+            int(round(obstacle.x_mm * pixels_per_mm + padding_px)),
+            int(round(obstacle.y_mm * pixels_per_mm + padding_px)),
+        )
+        radius = int(round((obstacle.radius_mm + 8.0) * pixels_per_mm))
+        cv2.circle(dark_mask, center, radius, 0, -1)
+
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(dark_mask)
+    wall_mask = np.zeros_like(dark_mask)
+    minimum_span_px = 0.4 * cell_size * pixels_per_mm
+    for label in range(1, component_count):
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        if max(width, height) >= minimum_span_px:
+            wall_mask[labels == label] = 255
     free_distance_px = cv2.distanceTransform(
-        (dark_mask == 0).astype(np.uint8), cv2.DIST_L2, 5
+        (wall_mask == 0).astype(np.uint8), cv2.DIST_L2, 5
     )
     max_distance_px = math.hypot(*dark_mask.shape[:2])
     clearance_mm = np.minimum(free_distance_px, max_distance_px) / pixels_per_mm
@@ -708,7 +727,7 @@ def plan_course(
         entry_mm,
         exit_mm,
         config,
-        dark_mask,
+        None,
         validate_approaches=False,
         robot_radius_mm=robot_travel_radius(config),
     )
@@ -717,7 +736,7 @@ def plan_course(
         entry_mm,
         exit_mm,
         config,
-        dark_mask,
+        None,
         validate_approaches=False,
         robot_radius_mm=robot_footprint_radius(config),
     )
@@ -727,7 +746,7 @@ def plan_course(
     start_outside_center = grid_cell_center(start_outside, config)
     goal_outside_center = grid_cell_center(goal_outside, config)
     extended_clearance, padding_px, pixels_per_mm = build_extended_clearance_map(
-        image, homography, config
+        image, homography, config, obstacles
     )
     travel_clearance = robot_travel_radius(config) + float(config["safety_margin_mm"])
     if not extended_line_is_free(
