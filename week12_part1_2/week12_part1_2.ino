@@ -50,17 +50,18 @@ const int SLOW_TURN_PWM = 30;
 const float TURN_TOLERANCE = 5.0;
 const float DISTANCE_TOLERANCE = 0.15;
 
-// Tune these four values on the actual maze.
+// Legacy side-wall tuning values are kept, but normal side-wall following is disabled.
 const int SIDE_WALL_MAX_MM = 150;
 const int SIDE_TARGET_MM = 75;
 const int FRONT_STOP_MM = 55;
 
-// Front-obstacle recovery.
-// If the front LiDAR sees something too close, the robot briefly reverses,
-// stops, then continues the SAME 'f' command instead of failing the sequence.
+// Front LiDAR worst-case recovery.
+// Normal driving is untouched. These are used only if something is
+// dangerously close in front of the robot.
 const int REVERSE_PWM = 65;
 const unsigned long REVERSE_TIME_MS = 250;
 const unsigned long REVERSE_SETTLE_MS = 120;
+const float RECOVERY_TURN_DEG = 12.0;
 
 const float LIDAR_KP = 0.20;
 const int MAX_LIDAR_CORRECTION = 22;
@@ -135,17 +136,42 @@ int readLidarMM(mtrn3100::Lidar &lidar) {
 }
 
 int calculateLidarCorrection(int leftMM, int rightMM) {
-    bool leftWall = leftMM > 0 && leftMM < SIDE_WALL_MAX_MM;
-    bool rightWall = rightMM > 0 && rightMM < SIDE_WALL_MAX_MM;
-    float wallError = 0;
+    // LiDAR must NOT steer the robot during normal movement.
+    // The old IMU + encoder movement remains in charge.
+    //
+    // Only use side LiDARs in a WORST-CASE situation when the robot is
+    // extremely close to a side wall. Then apply a small nudge AWAY from it.
 
-    if (leftWall && rightWall) wallError = leftMM - rightMM;
-    else if (leftWall) wallError = leftMM - SIDE_TARGET_MM;
-    else if (rightWall) wallError = SIDE_TARGET_MM - rightMM;
-    else return 0;
+    const int SIDE_EMERGENCY_MM = 25;
+    const int SIDE_EMERGENCY_CORRECTION = 12;
 
-    return constrain((int)(LIDAR_KP * wallError), -MAX_LIDAR_CORRECTION, MAX_LIDAR_CORRECTION);
+    bool leftTooClose = leftMM > 0 && leftMM <= SIDE_EMERGENCY_MM;
+    bool rightTooClose = rightMM > 0 && rightMM <= SIDE_EMERGENCY_MM;
+
+    if (leftTooClose && !rightTooClose) {
+        // Too close to LEFT wall -> steer RIGHT.
+        return -SIDE_EMERGENCY_CORRECTION;
+    }
+
+    if (rightTooClose && !leftTooClose) {
+        // Too close to RIGHT wall -> steer LEFT.
+        return SIDE_EMERGENCY_CORRECTION;
+    }
+
+    if (leftTooClose && rightTooClose) {
+        // If both are extremely close, steer toward the side with more room.
+        if (leftMM > rightMM) {
+            return SIDE_EMERGENCY_CORRECTION;   // more room on left -> steer left
+        } else if (rightMM > leftMM) {
+            return -SIDE_EMERGENCY_CORRECTION;  // more room on right -> steer right
+        }
+    }
+
+    // Normal case: NO LiDAR steering.
+    return 0;
 }
+
+bool turnToHeading(float newHeading);
 
 bool driveForwardOneCell() {
     float targetRotation = CELL_DISTANCE_M / WHEEL_RADIUS_M;
@@ -175,21 +201,51 @@ bool driveForwardOneCell() {
 
         if (frontMM > 0 && frontMM <= FRONT_STOP_MM) {
             stopMotors();
+
             Serial.print("Front obstacle detected at ");
             Serial.print(frontMM);
-            Serial.println(" mm - reversing briefly");
+            Serial.println(" mm");
 
+            // Back away a little first.
             reverseBriefly();
 
+            // Check which side has more free space.
             int leftMM = readLidarMM(leftLidar);
             int rightMM = readLidarMM(rightLidar);
+
+            Serial.print("Recovery check - L: ");
+            Serial.print(leftMM);
+            Serial.print(" R: ");
+            Serial.println(rightMM);
+
+            // Only make a SMALL recovery turn. The real 90-degree turns are
+            // still controlled by the command string.
+            if (leftMM > 0 && rightMM > 0) {
+                if (leftMM > rightMM) {
+                    Serial.println("Recovery: turning slightly LEFT");
+                    turnToHeading(targetHeading + RECOVERY_TURN_DEG);
+                } else if (rightMM > leftMM) {
+                    Serial.println("Recovery: turning slightly RIGHT");
+                    turnToHeading(targetHeading - RECOVERY_TURN_DEG);
+                } else {
+                    Serial.println("Recovery: equal side clearance, no turn");
+                }
+            } else if (leftMM > 0) {
+                Serial.println("Recovery: only left valid -> slight LEFT");
+                turnToHeading(targetHeading + RECOVERY_TURN_DEG);
+            } else if (rightMM > 0) {
+                Serial.println("Recovery: only right valid -> slight RIGHT");
+                turnToHeading(targetHeading - RECOVERY_TURN_DEG);
+            } else {
+                Serial.println("Recovery: no valid side readings, reverse only");
+            }
+
+            // Refresh readings and continue the SAME forward command.
+            leftMM = readLidarMM(leftLidar);
+            rightMM = readLidarMM(rightLidar);
             frontMM = readLidarMM(frontLidar);
             lidarCorrection = calculateLidarCorrection(leftMM, rightMM);
             lastLidarUpdate = millis();
-
-            Serial.print("After reverse - L: "); Serial.print(leftMM);
-            Serial.print(" R: "); Serial.print(rightMM);
-            Serial.print(" F: "); Serial.println(frontMM);
 
             continue;
         }
