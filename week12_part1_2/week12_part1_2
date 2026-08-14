@@ -36,18 +36,21 @@ mtrn3100::Lidar rightLidar;
 mtrn3100::Lidar frontLidar;
 
 const char commandString[] = "rfflflfrfrfflflf";
+// const char commandString[] = "ffrrl";
 const int COMMAND_COUNT = sizeof(commandString) - 1;
 
 const float CELL_DISTANCE_M = 0.185;
 const float WHEEL_RADIUS_M = 0.017;
-const int FORWARD_PWM = 100;
-const int MAX_FORWARD_CORRECTION = 35;
+// Run at full PWM. Steering remains possible by slowing only one wheel when
+// the other wheel is already at the 255 PWM maximum.
+const int FORWARD_PWM = 200;
+const int MAX_FORWARD_CORRECTION = 25;
 const float HEADING_KP = 2.0;
 
-const int MAX_TURN_PWM = 70;
-const int MEDIUM_TURN_PWM = 48;
-const int SLOW_TURN_PWM = 30;
-const float TURN_TOLERANCE = 2.0;
+const int MAX_TURN_PWM = 150;
+const int MEDIUM_TURN_PWM = 80;
+const int SLOW_TURN_PWM = 50;
+const float TURN_TOLERANCE = 3.0;
 const float DISTANCE_TOLERANCE = 0.15;
 
 // The IMU remains the main heading controller. When the robot is between two
@@ -65,13 +68,14 @@ const unsigned long SIDE_NUDGE_COOLDOWN_MS = 500;
 // A normal 'f' command is completed by the encoders. If a wall is genuinely
 // close in front, finish only that 'f' command and immediately continue to the
 // next planned command (usually a turn); do not stop the complete sequence.
-const int FRONT_WALL_END_MM = 15;
+const int FRONT_WALL_END_MM = 30;
 
 const unsigned long LIDAR_UPDATE_MS = 45;
 
-const unsigned long DRIVE_TIMEOUT = 6000;
+const unsigned long DRIVE_TIMEOUT = 3000;
 const unsigned long TURN_TIMEOUT = 6000;
-const unsigned long SETTLE_TIME = 50;
+const unsigned long SETTLE_TIME = 60;
+const bool PRINT_LIDAR_READINGS = false;
 
 float targetHeading = 0;
 bool systemReady = false;
@@ -96,8 +100,8 @@ float wrapAngle(float angle) {
 }
 
 void setForwardPWM(int leftPWM, int rightPWM) {
-    leftPWM = constrain(leftPWM, -120, 120);
-    rightPWM = constrain(rightPWM, -120, 120);
+    leftPWM = constrain(leftPWM, -255, 255);
+    rightPWM = constrain(rightPWM, -255, 255);
     motor1.setPWM(leftPWM);
     motor2.setPWM(-rightPWM);
 }
@@ -231,10 +235,12 @@ bool driveForwardOneCell() {
             lidarCorrection = calculateLidarCorrection(leftMM, rightMM);
             lastLidarUpdate = millis();
 
-            Serial.print("L: "); Serial.print(leftMM);
-            Serial.print(" R: "); Serial.print(rightMM);
-            Serial.print(" F: "); Serial.print(frontMM);
-            Serial.print(" side correction: "); Serial.println(lidarCorrection);
+            if (PRINT_LIDAR_READINGS) {
+                Serial.print("L: "); Serial.print(leftMM);
+                Serial.print(" R: "); Serial.print(rightMM);
+                Serial.print(" F: "); Serial.print(frontMM);
+                Serial.print(" side correction: "); Serial.println(lidarCorrection);
+            }
         }
 
         float leftTravel = encoder.getLeftRotation() - leftStart;
@@ -261,7 +267,19 @@ bool driveForwardOneCell() {
             return true;
         } else {
             settledSince = 0;
-            setForwardPWM(FORWARD_PWM - totalCorrection, FORWARD_PWM + totalCorrection);
+            int leftPWM = FORWARD_PWM;
+            int rightPWM = FORWARD_PWM;
+
+            // At full speed, preserve the same steering direction by reducing
+            // the wheel on the inside of the correction. A correction of 10
+            // produces a 20-PWM wheel difference, matching the old +/- method.
+            if (totalCorrection > 0) {
+                leftPWM -= 2 * totalCorrection;
+            } else if (totalCorrection < 0) {
+                rightPWM += 2 * totalCorrection;
+            }
+
+            setForwardPWM(leftPWM, rightPWM);
         }
 
         delay(5);
@@ -309,7 +327,7 @@ bool turnLeft90() { return turnToHeading(targetHeading + 90.0); }
 bool turnRight90() { return turnToHeading(targetHeading - 90.0); }
 
 void setup() {
-    Serial.begin(9600);
+    Serial.begin(115200);
     Wire.begin();
     stopMotors();
     delay(1000);
@@ -361,6 +379,6 @@ void loop() {
     }
 
     commandIndex++;
-    delay(200);
+    delay(60);
     if (commandIndex >= COMMAND_COUNT) Serial.println("All commands completed");
 }
