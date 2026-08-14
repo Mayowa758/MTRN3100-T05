@@ -5,7 +5,7 @@
 #include "Lidar.hpp"
 #include <MPU6050_light.h>
 
-constexpr float CELL_DISTANCE_M = 0.170;
+constexpr float CELL_DISTANCE_M = 0.180;
 constexpr float WHEEL_RADIUS_M = 0.016;
 
 constexpr int FORWARD_PWM = 100;
@@ -27,13 +27,16 @@ constexpr int SIDE_CENTRE_MIN_MM = 35;
 constexpr int SIDE_CENTRE_MAX_MM = 110;
 constexpr int SIDE_CENTRE_DEADBAND_MM = 5;
 constexpr int SIDE_CENTRE_CORRECTION = 7;
+constexpr unsigned long SIDE_CENTRE_PULSE_MS = 30;
 
 constexpr int SIDE_EMERGENCY_MM = 55;
 constexpr int SIDE_EMERGENCY_CORRECTION = 10;
 constexpr int SIDE_EMERGENCY_CONFIRMATIONS = 2;
 
 constexpr unsigned long SIDE_NUDGE_DURATION_MS = 50;
-constexpr unsigned long SIDE_NUDGE_COOLDOWN_MS = 50;
+// After any lidar pulse, release steering to the IMU long enough for it to
+// return the robot to targetHeading before another lidar correction is allowed.
+constexpr unsigned long SIDE_NUDGE_COOLDOWN_MS = 180;
 
 constexpr int FRONT_WALL_END_MM = 50;
 constexpr unsigned long LIDAR_UPDATE_MS = 45;
@@ -59,6 +62,9 @@ public:
     {}
 
     bool driveForwardOneCell() {
+        // This flag lets Maze distinguish a complete encoder-based cell move
+        // from an early stop caused by the front lidar.
+        lastForwardCompletedCell = false;
         float targetRotation = CELL_DISTANCE_M / WHEEL_RADIUS_M;
         float leftStart = encoder.getLeftRotation();
         float rightStart = -encoder.getRightRotation();
@@ -136,6 +142,7 @@ public:
 
                 if (millis() - settledSince >= SETTLE_TIME) {
                     //Serial.println("Forward complete");
+                    lastForwardCompletedCell = true;
                     return true;
                 }
             } else {
@@ -244,6 +251,18 @@ public:
         const bool leftValid = leftMM >= 0;
         const bool rightValid = rightMM >= 0;
 
+        // Keep a correction brief. Continuous side correction can rotate the
+        // robot away from its IMU heading instead of merely nudging it centred.
+        if (activeSideNudge != 0) {
+            return activeSideNudge;
+        }
+
+        // During this period the caller supplies zero lidar correction, so the
+        // IMU heading controller alone straightens the robot after a pulse.
+        if ((long)(millis() - sideNudgeCooldownEndsAt) < 0) {
+            return 0;
+        }
+
         if (
             leftValid &&
             rightValid &&
@@ -255,16 +274,14 @@ public:
             int sideError = leftMM - rightMM;
 
             if (abs(sideError) > SIDE_CENTRE_DEADBAND_MM) {
-                return constrain(
+                activeSideNudge = constrain(
                     sideError / 6,
                     -SIDE_CENTRE_CORRECTION,
                     SIDE_CENTRE_CORRECTION
                 );
+                sideNudgeEndsAt = millis() + SIDE_CENTRE_PULSE_MS;
+                return activeSideNudge;
             }
-        }
-
-        if ((long)(millis() - sideNudgeCooldownEndsAt) < 0) {
-            return 0;
         }
 
         const bool leftClose = leftValid && leftMM <= SIDE_EMERGENCY_MM;
@@ -339,6 +356,10 @@ public:
         return targetHeading;
     }
 
+    bool didLastForwardCompleteCell() const {
+        return lastForwardCompletedCell;
+    }
+
 private:
     mtrn3100::Motor& motorL;
     mtrn3100::Motor& motorR;
@@ -349,6 +370,7 @@ private:
     mtrn3100::Lidar& frontLidar;
 
     float targetHeading = 0;
+    bool lastForwardCompletedCell = false;
 
     uint8_t leftCloseCount = 0;
     uint8_t rightCloseCount = 0;
