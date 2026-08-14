@@ -36,7 +36,7 @@ MPU6050 mpu(Wire);
 Robot robot(motorL, motorR, encoder, mpu, lidarL, lidarR, lidarF);
 
 // maze
-mtrn3100::Maze maze(lidarL, lidarR, lidarF, mtrn3100::Maze::NORTH, 7, 1, 8, 3);
+mtrn3100::Maze maze(lidarL, lidarR, lidarF, mtrn3100::Maze::SOUTH, 0, 6, 1, 6);
 
 // display
 U8G2_SSD1306_128X64_NONAME_1_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
@@ -117,5 +117,5 @@ void loop() {
             }
         }
     }
-    delay(100);
+    delay(5);
 }

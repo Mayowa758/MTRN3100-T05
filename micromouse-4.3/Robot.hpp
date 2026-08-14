@@ -5,37 +5,37 @@
 #include "Lidar.hpp"
 #include <MPU6050_light.h>
 
-constexpr float CELL_DISTANCE_M = 0.185;
-constexpr float WHEEL_RADIUS_M = 0.017;
+constexpr float CELL_DISTANCE_M = 0.170;
+constexpr float WHEEL_RADIUS_M = 0.016;
 
 constexpr int FORWARD_PWM = 100;
-constexpr int MAX_FORWARD_CORRECTION = 35;
-constexpr float HEADING_KP = 2.0;
+constexpr int MAX_FORWARD_CORRECTION = 60;
+constexpr float HEADING_KP = 4.0;
 
 constexpr int MAX_TURN_PWM = 70;
 constexpr int MEDIUM_TURN_PWM = 48;
 constexpr int SLOW_TURN_PWM = 30;
 
-constexpr float TURN_TOLERANCE = 2.0;
+constexpr float TURN_TOLERANCE = 1.0;
 constexpr float DISTANCE_TOLERANCE = 0.15;
 
-constexpr unsigned long DRIVE_TIMEOUT = 6000;
-constexpr unsigned long TURN_TIMEOUT = 6000;
-constexpr unsigned long SETTLE_TIME = 50;
+constexpr unsigned long DRIVE_TIMEOUT = 2000;
+constexpr unsigned long TURN_TIMEOUT = 2000;
+constexpr unsigned long SETTLE_TIME = 0;
 
-constexpr int SIDE_CENTRE_MIN_MM = 25;
-constexpr int SIDE_CENTRE_MAX_MM = 120;
-constexpr int SIDE_CENTRE_DEADBAND_MM = 12;
-constexpr int SIDE_CENTRE_CORRECTION = 4;
+constexpr int SIDE_CENTRE_MIN_MM = 35;
+constexpr int SIDE_CENTRE_MAX_MM = 110;
+constexpr int SIDE_CENTRE_DEADBAND_MM = 5;
+constexpr int SIDE_CENTRE_CORRECTION = 7;
 
-constexpr int SIDE_EMERGENCY_MM = 15;
-constexpr int SIDE_EMERGENCY_CORRECTION = 5;
-constexpr int SIDE_EMERGENCY_CONFIRMATIONS = 4;
+constexpr int SIDE_EMERGENCY_MM = 55;
+constexpr int SIDE_EMERGENCY_CORRECTION = 10;
+constexpr int SIDE_EMERGENCY_CONFIRMATIONS = 2;
 
 constexpr unsigned long SIDE_NUDGE_DURATION_MS = 50;
-constexpr unsigned long SIDE_NUDGE_COOLDOWN_MS = 500;
+constexpr unsigned long SIDE_NUDGE_COOLDOWN_MS = 50;
 
-constexpr int FRONT_WALL_END_MM = 15;
+constexpr int FRONT_WALL_END_MM = 50;
 constexpr unsigned long LIDAR_UPDATE_MS = 45;
 
 class Robot {
@@ -142,7 +142,7 @@ public:
                 settledSince = 0;
 
                 int leftPWM = FORWARD_PWM - totalCorrection;
-                int rightPWM = FORWARD_PWM + totalCorrection;
+                int rightPWM = FORWARD_PWM + totalCorrection + 5;
 
                 setForwardPWM(leftPWM, rightPWM);
             }
@@ -202,7 +202,7 @@ public:
                 setTurnPWM(turnPWM);
             }
 
-            delay(10);
+            delay(5);
         }
 
         stopMotors();
@@ -210,16 +210,24 @@ public:
         return false;
     }
 
+    // bool turnLeft90() {
+    //     mpu.update();
+    //     float currentHeading = mpu.getAngleZ();
+    //     return turnToHeading(currentHeading + 90.0);
+    // }
+
+    // bool turnRight90() {
+    //     mpu.update();
+    //     float currentHeading = mpu.getAngleZ();
+    //     return turnToHeading(currentHeading - 90.0);
+    // }
+
     bool turnLeft90() {
-        mpu.update();
-        float currentHeading = mpu.getAngleZ();
-        return turnToHeading(currentHeading + 90.0);
+        return turnToHeading(targetHeading + 90.0);
     }
 
     bool turnRight90() {
-        mpu.update();
-        float currentHeading = mpu.getAngleZ();
-        return turnToHeading(currentHeading - 90.0);
+        return turnToHeading(targetHeading - 90.0);
     }
 
     int readLidarMM(mtrn3100::Lidar& lidar) {
@@ -306,8 +314,8 @@ public:
     }
 
     void setForwardPWM(int leftPWM, int rightPWM) {
-        leftPWM = constrain(leftPWM, -120, 120);
-        rightPWM = constrain(rightPWM, -120, 120);
+        leftPWM = constrain(leftPWM, -150, 150);
+        rightPWM = constrain(rightPWM, -150, 150);
         motorL.setPWM(leftPWM);
         motorR.setPWM(-rightPWM);
     }
@@ -344,7 +352,7 @@ private:
 
     uint8_t leftCloseCount = 0;
     uint8_t rightCloseCount = 0;
-    uint8_t activeSideNudge = 0;
+    int activeSideNudge = 0;
     unsigned long sideNudgeEndsAt = 0;
     unsigned long sideNudgeCooldownEndsAt = 0;
 };
