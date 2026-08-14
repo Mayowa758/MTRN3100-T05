@@ -11,984 +11,1552 @@ class Maze {
 
 public:
 
-// ---------------- SETTINGS ----------------
-
-static const int SIZE = 9;
-static const int TARGET_CELLS = 59;
-
-const uint8_t WALL_THRESHOLD = 100;
-
-// ---------------- DIRECTIONS ----------------
-
-enum Direction {
-NORTH = 0,
-EAST = 1,
-SOUTH = 2,
-WEST = 3
-};
-
-// ---------------- POSITION ----------------
-
-struct Position {
-uint8_t row;
-uint8_t col;
-};
-
-// ---------------- CONSTRUCTOR ----------------
-
-Maze(Lidar& leftLidar, Lidar& rightLidar, Lidar& frontLidar, Direction startDirection, 
-      uint8_t startRow, uint8_t startCol, uint8_t goalRow, uint8_t goalCol):
-lidarL(leftLidar),
-lidarR(rightLidar),
-lidarF(frontLidar),
-robotDirection(startDirection),
-robotRow(startRow),
-robotCol(startCol),
-startRow(startRow),
-startCol(startCol),
-goalRow(goalRow),
-goalCol(goalCol),
-cellsVisited(0),
-pathLength(0)
-{
-clearMap();
-path[pathLength].row = robotRow;
-path[pathLength].col = robotCol;
-pathLength++;
-}
-
-// ---------------- INITIALISE MAP ----------------
-
-void clearMap() {
-
-cellsVisited = 0;
-pathLength = 0;
-
-for (int row = 0; row < SIZE; row++) {
-for (int col = 0; col < SIZE; col++) {
-walls[row][col] = 0;
-knownWalls[row][col] = 0;
-}
-}
-
-for (int i = 0; i < sizeof(visited); i++) {
-visited[i] = 0;
-}
-
-/*
- * The outside boundary of the maze
- * is known to be a wall.
- */
-
-for (int col = 0; col < SIZE; col++) {
-setWall(0, col, NORTH, true);
-setWall(SIZE - 1, col, SOUTH, true);
-}
-
-for (int row = 0; row < SIZE; row++) {
-setWall(row, 0, WEST, true);
-setWall(row, SIZE - 1, EAST, true);
-}
-}
-
-// ---------------- MAP CURRENT CELL ----------------
-
-void mapCurrentCell() {
-
-uint16_t leftDistance = lidarL.readDistance();
-uint16_t frontDistance = lidarF.readDistance();
-uint16_t rightDistance = lidarR.readDistance();
-
-bool leftWall = leftDistance < WALL_THRESHOLD;
-bool frontWall = frontDistance < WALL_THRESHOLD;
-bool rightWall = rightDistance < WALL_THRESHOLD;
-
-Serial.print("Front: ");
-Serial.print(frontDistance);
-Serial.print(" Left: ");
-Serial.print(leftDistance);
-Serial.print(" Right: ");
-Serial.println(rightDistance);
-
-/*
- * Convert robot-relative measurements
- * into absolute maze directions.
- */
-
-if (robotDirection == NORTH) {
-setWall(robotRow, robotCol, WEST, leftWall);
-setWall(robotRow, robotCol, NORTH, frontWall);
-setWall(robotRow, robotCol, EAST, rightWall);
-}
-
-else if (robotDirection == EAST) {
-setWall(robotRow, robotCol, NORTH, leftWall);
-setWall(robotRow, robotCol, EAST, frontWall);
-setWall(robotRow, robotCol, SOUTH, rightWall);
-}
+    // ============================================================
+    // SETTINGS
+    // ============================================================
+
+    static constexpr uint8_t SIZE = 9;
+    static constexpr uint8_t TARGET_CELLS = 59;
+    static constexpr uint8_t WALL_THRESHOLD = 120;
+
+
+    // ============================================================
+    // DIRECTIONS
+    // ============================================================
+
+    enum Direction : uint8_t {
+        NORTH = 0,
+        EAST = 1,
+        SOUTH = 2,
+        WEST = 3
+    };
+
+
+    // ============================================================
+    // POSITION
+    // ============================================================
+
+    struct Position {
+        uint8_t row;
+        uint8_t col;
+    };
+
+
+    // ============================================================
+    // CONSTRUCTOR
+    // ============================================================
+
+    Maze(
+        Lidar& leftLidar,
+        Lidar& rightLidar,
+        Lidar& frontLidar,
+        Direction startDirection,
+        uint8_t startRow,
+        uint8_t startCol,
+        uint8_t goalRow,
+        uint8_t goalCol
+    )
+        : lidarL(leftLidar),
+          lidarR(rightLidar),
+          lidarF(frontLidar),
+          robotDirection(startDirection),
+          startDirection(startDirection),
+          robotRow(startRow),
+          robotCol(startCol),
+          startRow(startRow),
+          startCol(startCol),
+          goalRow(goalRow),
+          goalCol(goalCol),
+          cellsVisited(0),
+          pathLength(0)
+    {
+        clearMap();
+
+        path[pathLength].row = robotRow;
+        path[pathLength].col = robotCol;
+        pathLength++;
+    }
+
+
+    // ============================================================
+    // INITIALISE MAP
+    // ============================================================
+
+    void clearMap() {
+
+        cellsVisited = 0;
+        pathLength = 0;
+
+        for (uint8_t row = 0; row < SIZE; row++) {
+            for (uint8_t col = 0; col < SIZE; col++) {
+                walls[row][col] = 0;
+                knownWalls[row][col] = 0;
+            }
+        }
+
+        for (uint8_t i = 0; i < sizeof(visited); i++) {
+            visited[i] = 0;
+        }
+
+        /*
+         * The outside boundary of the maze
+         * is known to be a wall.
+         */
+
+        for (uint8_t col = 0; col < SIZE; col++) {
+            setWall(0, col, NORTH, true);
+            setWall(SIZE - 1, col, SOUTH, true);
+        }
+
+        for (uint8_t row = 0; row < SIZE; row++) {
+            setWall(row, 0, WEST, true);
+            setWall(row, SIZE - 1, EAST, true);
+        }
+    }
+
+
+    // ============================================================
+    // MAP CURRENT CELL
+    // ============================================================
+
+    void mapCurrentCell() {
+
+        uint16_t leftDistance = lidarL.readDistance();
+        uint16_t frontDistance = lidarF.readDistance();
+        uint16_t rightDistance = lidarR.readDistance();
+
+        bool leftWall =
+            leftDistance < WALL_THRESHOLD &&
+            leftDistance != 0;
+
+        bool frontWall =
+            frontDistance < WALL_THRESHOLD &&
+            frontDistance != 0;
+
+        bool rightWall =
+            rightDistance < WALL_THRESHOLD &&
+            rightDistance != 0;
+
+        /*
+         * Convert robot-relative measurements
+         * into absolute maze directions.
+         */
+
+        if (robotDirection == NORTH) {
+
+            setWall(
+                robotRow,
+                robotCol,
+                WEST,
+                leftWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                NORTH,
+                frontWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                EAST,
+                rightWall
+            );
+        }
+
+        else if (robotDirection == EAST) {
+
+            setWall(
+                robotRow,
+                robotCol,
+                NORTH,
+                leftWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                EAST,
+                frontWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                SOUTH,
+                rightWall
+            );
+        }
+
+        else if (robotDirection == SOUTH) {
+
+            setWall(
+                robotRow,
+                robotCol,
+                EAST,
+                leftWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                SOUTH,
+                frontWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                WEST,
+                rightWall
+            );
+        }
+
+        else {
+
+            setWall(
+                robotRow,
+                robotCol,
+                SOUTH,
+                leftWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                WEST,
+                frontWall
+            );
+
+            setWall(
+                robotRow,
+                robotCol,
+                NORTH,
+                rightWall
+            );
+        }
+
+        visitCell(robotRow, robotCol);
+    }
+
+
+    // ============================================================
+    // WALL STORAGE
+    // ============================================================
+
+    void setWall(
+        int row,
+        int col,
+        Direction direction,
+        bool hasWall
+    ) {
+
+        if (!validCell(row, col)) {
+            return;
+        }
+
+        /*
+         * Never allow the outer maze boundary
+         * to be overwritten by a LiDAR reading.
+         */
+
+        if (row == 0 && direction == NORTH) {
+            hasWall = true;
+        }
+
+        if (row == SIZE - 1 && direction == SOUTH) {
+            hasWall = true;
+        }
+
+        if (col == 0 && direction == WEST) {
+            hasWall = true;
+        }
+
+        if (col == SIZE - 1 && direction == EAST) {
+            hasWall = true;
+        }
+
+        uint8_t bit = directionBit(direction);
+
+        /*
+         * Store whether this wall exists.
+         */
+
+        if (hasWall) {
+            walls[row][col] |= bit;
+        }
+        else {
+            walls[row][col] &= ~bit;
+        }
+
+        /*
+         * Store that this wall has been measured.
+         */
+
+        knownWalls[row][col] |= bit;
+
+        /*
+         * Update neighbouring cell.
+         */
+
+        int neighbourRow = row;
+        int neighbourCol = col;
+
+        Direction oppositeDirection;
+
+        if (direction == NORTH) {
+            neighbourRow--;
+            oppositeDirection = SOUTH;
+        }
+
+        else if (direction == EAST) {
+            neighbourCol++;
+            oppositeDirection = WEST;
+        }
+
+        else if (direction == SOUTH) {
+            neighbourRow++;
+            oppositeDirection = NORTH;
+        }
+
+        else {
+            neighbourCol--;
+            oppositeDirection = EAST;
+        }
+
+        if (validCell(neighbourRow, neighbourCol)) {
+
+            uint8_t oppositeBit =
+                directionBit(oppositeDirection);
+
+            if (hasWall) {
+                walls[neighbourRow][neighbourCol] |= oppositeBit;
+            }
+            else {
+                walls[neighbourRow][neighbourCol] &= ~oppositeBit;
+            }
+
+            knownWalls[neighbourRow][neighbourCol] |=
+                oppositeBit;
+        }
+    }
+
+
+    // ============================================================
+    // VISITED CELLS
+    // ============================================================
+
+    void visitCell(int row, int col) {
+
+        if (!validCell(row, col)) {
+            return;
+        }
+
+        int index = row * SIZE + col;
+        int byteIndex = index / 8;
+        int bitIndex = index % 8;
+
+        uint8_t mask = 1 << bitIndex;
+
+        if (!(visited[byteIndex] & mask)) {
+
+            visited[byteIndex] |= mask;
+            cellsVisited++;
+        }
+    }
+
+
+    // ============================================================
+    // MOVE ROBOT POSITION
+    // ============================================================
+
+    void moveToNextCell() {
+
+        /*
+         * Use int here because moving NORTH from row 0
+         * temporarily produces -1.
+         *
+         * Do NOT use uint8_t for these temporary values.
+         */
+
+        int nextRow = robotRow;
+        int nextCol = robotCol;
+
+        if (robotDirection == NORTH) {
+            nextRow--;
+        }
+
+        else if (robotDirection == EAST) {
+            nextCol++;
+        }
+
+        else if (robotDirection == SOUTH) {
+            nextRow++;
+        }
+
+        else if (robotDirection == WEST) {
+            nextCol--;
+        }
+
+        if (validCell(nextRow, nextCol)) {
+
+            robotRow = nextRow;
+            robotCol = nextCol;
+
+            visitCell(robotRow, robotCol);
+        }
+    }
+
+
+    // ============================================================
+    // TURN ROBOT
+    // ============================================================
+
+    void turnLeft() {
+
+        if (robotDirection == NORTH) {
+            robotDirection = WEST;
+        }
+
+        else if (robotDirection == WEST) {
+            robotDirection = SOUTH;
+        }
 
-else if (robotDirection == SOUTH) {
-setWall(robotRow, robotCol, EAST, leftWall);
-setWall(robotRow, robotCol, SOUTH, frontWall);
-setWall(robotRow, robotCol, WEST, rightWall);
-}
+        else if (robotDirection == SOUTH) {
+            robotDirection = EAST;
+        }
+
+        else {
+            robotDirection = NORTH;
+        }
+    }
+
+
+    void turnRight() {
+
+        if (robotDirection == NORTH) {
+            robotDirection = EAST;
+        }
+
+        else if (robotDirection == EAST) {
+            robotDirection = SOUTH;
+        }
+
+        else if (robotDirection == SOUTH) {
+            robotDirection = WEST;
+        }
+
+        else {
+            robotDirection = NORTH;
+        }
+    }
+
+
+    // ============================================================
+    // CHECK WALL
+    // ============================================================
+
+    bool hasWall(
+        int row,
+        int col,
+        Direction direction
+    ) const {
+
+        if (!validCell(row, col)) {
+            return true;
+        }
+
+        return (
+            walls[row][col] &
+            directionBit(direction)
+        ) != 0;
+    }
+
+
+    // ============================================================
+    // CHECK KNOWN WALL
+    // ============================================================
 
-else if (robotDirection == WEST) {
-setWall(robotRow, robotCol, SOUTH, leftWall);
-setWall(robotRow, robotCol, WEST, frontWall);
-setWall(robotRow, robotCol, NORTH, rightWall);
-}
-
-visitCell(robotRow, robotCol);
-}
-
-// ---------------- WALL STORAGE ----------------
+    bool isWallKnown(
+        int row,
+        int col,
+        Direction direction
+    ) const {
+
+        if (!validCell(row, col)) {
+            return false;
+        }
+
+        return (
+            knownWalls[row][col] &
+            directionBit(direction)
+        ) != 0;
+    }
+
 
-void setWall(int row, int col, Direction direction, bool hasWall) {
+    // ============================================================
+    // CHECK VISITED
+    // ============================================================
+
+    bool isVisited(int row, int col) const {
+
+        if (!validCell(row, col)) {
+            return false;
+        }
+
+        int index = row * SIZE + col;
+        int byteIndex = index / 8;
+        int bitIndex = index % 8;
 
-if (!validCell(row, col)) {
-return;
-}
+        return (
+            visited[byteIndex] &
+            (1 << bitIndex)
+        ) != 0;
+    }
 
-uint8_t bit = directionBit(direction);
 
-/*
- * Store whether this wall exists.
- */
+    // ============================================================
+    // FIND NEXT CELL
+    // ============================================================
 
-if (hasWall) {
-walls[row][col] |= bit;
-}
-else {
-walls[row][col] &= ~bit;
-}
+    bool canMoveTo(Direction direction) {
 
-/*
- * Store that this wall has been measured.
- */
+        if (!isWallKnown(
+                robotRow,
+                robotCol,
+                direction
+            )) {
 
-knownWalls[row][col] |= bit;
+            return false;
+        }
 
-/*
- * Update the neighbouring cell.
- */
+        if (hasWall(
+                robotRow,
+                robotCol,
+                direction
+            )) {
 
-int neighbourRow = row;
-int neighbourCol = col;
+            return false;
+        }
 
-Direction oppositeDirection;
+        /*
+         * Keep temporary coordinates as int because
+         * they may become -1 at the boundary.
+         */
 
-if (direction == NORTH) {
-neighbourRow--;
-oppositeDirection = SOUTH;
-}
+        int nextRow = robotRow;
+        int nextCol = robotCol;
 
-else if (direction == EAST) {
-neighbourCol++;
-oppositeDirection = WEST;
-}
+        if (direction == NORTH) {
+            nextRow--;
+        }
 
-else if (direction == SOUTH) {
-neighbourRow++;
-oppositeDirection = NORTH;
-}
+        else if (direction == EAST) {
+            nextCol++;
+        }
 
-else {
-neighbourCol--;
-oppositeDirection = EAST;
-}
+        else if (direction == SOUTH) {
+            nextRow++;
+        }
 
-if (validCell(neighbourRow, neighbourCol)) {
+        else {
+            nextCol--;
+        }
 
-uint8_t oppositeBit = directionBit(oppositeDirection);
+        if (!validCell(nextRow, nextCol)) {
+            return false;
+        }
 
-if (hasWall) {
-walls[neighbourRow][neighbourCol] |= oppositeBit;
-}
-else {
-walls[neighbourRow][neighbourCol] &= ~oppositeBit;
-}
+        if (isVisited(nextRow, nextCol)) {
+            return false;
+        }
 
-knownWalls[neighbourRow][neighbourCol] |= oppositeBit;
-}
-}
+        return true;
+    }
 
-// ---------------- VISITED CELLS ----------------
 
-void visitCell(int row, int col) {
+    // ============================================================
+    // FIND UNVISITED DIRECTION
+    // ============================================================
 
-if (!validCell(row, col)) {
-return;
-}
+    bool findUnvisitedDirection(
+        Direction& direction
+    ) {
 
-int index = row * SIZE + col;
-int byteIndex = index / 8;
-int bitIndex = index % 8;
+        if (canMoveTo(NORTH)) {
+            direction = NORTH;
+            return true;
+        }
 
-uint8_t mask = 1 << bitIndex;
+        if (canMoveTo(EAST)) {
+            direction = EAST;
+            return true;
+        }
 
-if (!(visited[byteIndex] & mask)) {
-visited[byteIndex] |= mask;
-cellsVisited++;
+        if (canMoveTo(SOUTH)) {
+            direction = SOUTH;
+            return true;
+        }
 
-Serial.print("Visited: ");
-Serial.print(row);
-Serial.print(",");
-Serial.print(col);
-Serial.print(" Cells: ");
-Serial.println(cellsVisited);
-}
-}
+        if (canMoveTo(WEST)) {
+            direction = WEST;
+            return true;
+        }
 
-// ---------------- MOVE ROBOT POSITION ----------------
+        return false;
+    }
 
-void moveToNextCell() {
 
-if (robotDirection == NORTH) {
-robotRow--;
-}
+    // ============================================================
+    // GET NEXT POSITION
+    // ============================================================
 
-else if (robotDirection == EAST) {
-robotCol++;
-}
+    Position getNextPosition(Direction direction) {
 
-else if (robotDirection == SOUTH) {
-robotRow++;
-}
+        Position next;
 
-else if (robotDirection == WEST) {
-robotCol--;
-}
+        next.row = robotRow;
+        next.col = robotCol;
 
-if (validCell(robotRow, robotCol)) {
-visitCell(robotRow, robotCol);
-}
-}
+        int nextRow = robotRow;
+        int nextCol = robotCol;
 
-// ---------------- TURN ROBOT ----------------
+        if (direction == NORTH) {
+            nextRow--;
+        }
 
-void turnLeft() {
+        else if (direction == EAST) {
+            nextCol++;
+        }
 
-if (robotDirection == NORTH) {
-robotDirection = WEST;
-}
+        else if (direction == SOUTH) {
+            nextRow++;
+        }
 
-else if (robotDirection == WEST) {
-robotDirection = SOUTH;
-}
+        else {
+            nextCol--;
+        }
 
-else if (robotDirection == SOUTH) {
-robotDirection = EAST;
-}
+        if (validCell(nextRow, nextCol)) {
+            next.row = nextRow;
+            next.col = nextCol;
+        }
 
-else {
-robotDirection = NORTH;
-}
-}
+        return next;
+    }
 
-void turnRight() {
 
-if (robotDirection == NORTH) {
-robotDirection = EAST;
-}
+    // ============================================================
+    // TURN TO DIRECTION
+    // ============================================================
 
-else if (robotDirection == EAST) {
-robotDirection = SOUTH;
-}
+    bool faceDirection(
+        Robot& robot,
+        Direction direction
+    ) {
 
-else if (robotDirection == SOUTH) {
-robotDirection = WEST;
-}
+        int difference =
+            direction - robotDirection;
 
-else {
-robotDirection = NORTH;
-}
-}
+        if (difference < 0) {
+            difference += 4;
+        }
 
-// ---------------- CHECK WALL ----------------
+        if (difference == 0) {
+            return true;
+        }
 
-bool hasWall(int row, int col, Direction direction) const {
+        if (difference == 1) {
 
-if (!validCell(row, col)) {
-return true;
-}
+            if (robot.turnRight90()) {
 
-return (walls[row][col] & directionBit(direction)) != 0;
-}
+                robotDirection = direction;
+                return true;
+            }
+        }
 
-// ---------------- CHECK KNOWN WALL ----------------
+        else if (difference == 2) {
 
-bool isWallKnown(int row, int col, Direction direction) const {
+            if (robot.turnRight90()) {
 
-if (!validCell(row, col)) {
-return false;
-}
+                if (robot.turnRight90()) {
 
-return (knownWalls[row][col] & directionBit(direction)) != 0;
-}
+                    robotDirection = direction;
+                    return true;
+                }
+            }
+        }
 
-// ---------------- CHECK VISITED ----------------
+        else if (difference == 3) {
 
-bool isVisited(int row, int col) const {
+            if (robot.turnLeft90()) {
 
-if (!validCell(row, col)) {
-return false;
-}
+                robotDirection = direction;
+                return true;
+            }
+        }
 
-int index = row * SIZE + col;
-int byteIndex = index / 8;
-int bitIndex = index % 8;
+        return false;
+    }
 
-return (visited[byteIndex] & (1 << bitIndex)) != 0;
-}
 
-// ---------------- FIND NEXT CELL ----------------
+    // ============================================================
+    // DFS MAPPING STEP
+    // ============================================================
 
-bool canMoveTo(Direction direction) {
+    bool mappingStep(Robot& robot) {
 
-if (!isWallKnown(robotRow, robotCol, direction)) {
-return false;
-}
+        if (cellsVisited >= TARGET_CELLS) {
 
-if (hasWall(robotRow, robotCol, direction)) {
-return false;
-}
+            robot.stopMotors();
+            return false;
+        }
 
-int nextRow = robotRow;
-int nextCol = robotCol;
+        /*
+         * Map current cell.
+         */
 
-if (direction == NORTH) {
-nextRow--;
-}
+        mapCurrentCell();
 
-else if (direction == EAST) {
-nextCol++;
-}
+        Direction nextDirection;
 
-else if (direction == SOUTH) {
-nextRow++;
-}
+        /*
+         * DFS:
+         *
+         * 1. Find unvisited neighbour.
+         * 2. Turn towards it.
+         * 3. Drive one cell.
+         * 4. Add new cell to DFS path.
+         */
 
-else {
-nextCol--;
-}
+        if (findUnvisitedDirection(nextDirection)) {
 
-if (!validCell(nextRow, nextCol)) {
-return false;
-}
+            if (!faceDirection(
+                    robot,
+                    nextDirection
+                )) {
 
-if (isVisited(nextRow, nextCol)) {
-return false;
-}
+                robot.stopMotors();
+                return false;
+            }
 
-return true;
-}
+            if (!robot.driveForwardOneCell()) {
 
-// ---------------- FIND UNVISITED DIRECTION ----------------
+                robot.stopMotors();
+                return false;
+            }
 
-bool findUnvisitedDirection(Direction& direction) {
+            /*
+             * Update robot position.
+             */
 
-if (canMoveTo(NORTH)) {
-direction = NORTH;
-return true;
-}
+            moveToNextCell();
 
-if (canMoveTo(EAST)) {
-direction = EAST;
-return true;
-}
+            /*
+             * Add newly entered cell to DFS path.
+             */
 
-if (canMoveTo(SOUTH)) {
-direction = SOUTH;
-return true;
-}
+            if (pathLength < SIZE * SIZE) {
 
-if (canMoveTo(WEST)) {
-direction = WEST;
-return true;
-}
+                path[pathLength].row =
+                    robotRow;
 
-return false;
-}
+                path[pathLength].col =
+                    robotCol;
 
-// ---------------- GET NEXT POSITION ----------------
+                pathLength++;
+            }
 
-Position getNextPosition(Direction direction) {
+            /*
+             * Map new cell.
+             */
 
-Position next;
+            mapCurrentCell();
 
-next.row = robotRow;
-next.col = robotCol;
+            return true;
+        }
 
-if (direction == NORTH) {
-next.row--;
-}
 
-else if (direction == EAST) {
-next.col++;
-}
+        // --------------------------------------------------------
+        // BACKTRACK
+        // --------------------------------------------------------
 
-else if (direction == SOUTH) {
-next.row++;
-}
+        if (pathLength <= 1) {
 
-else {
-next.col--;
-}
+            robot.stopMotors();
+            return false;
+        }
 
-return next;
-}
+        /*
+         * Remove current cell from DFS path.
+         */
 
-// ---------------- GET HEADING ----------------
+        pathLength--;
 
-float getHeading(Direction direction) const {
+        Position previous =
+            path[pathLength - 1];
 
-if (direction == EAST) {
-return 0.0;
-}
+        Direction backDirection;
 
-if (direction == NORTH) {
-return 90.0;
-}
+        if (previous.row < robotRow) {
 
-if (direction == WEST) {
-return 180.0;
-}
+            backDirection = NORTH;
+        }
 
-return -90.0;
-}
+        else if (previous.row > robotRow) {
 
-// ---------------- TURN TO DIRECTION ----------------
+            backDirection = SOUTH;
+        }
 
-bool faceDirection(Robot& robot, Direction direction) {
+        else if (previous.col < robotCol) {
 
-float targetHeading = getHeading(direction);
+            backDirection = WEST;
+        }
 
-bool success = robot.turnToHeading(targetHeading);
+        else {
 
-if (success) {
-robotDirection = direction;
-return true;
-}
+            backDirection = EAST;
+        }
 
-return false;
-}
+        if (!faceDirection(
+                robot,
+                backDirection
+            )) {
 
-// ---------------- DFS MAPPING STEP ----------------
+            robot.stopMotors();
+            return false;
+        }
 
-bool mappingStep(Robot& robot) {
+        if (!robot.driveForwardOneCell()) {
 
-  if (cellsVisited >= TARGET_CELLS) {
-  robot.stopMotors();
-  return false;
-  }
+            robot.stopMotors();
+            return false;
+        }
 
-  /*
-  * Map the cell we are currently in.
-  */
+        /*
+         * Update robot position.
+         */
 
-  mapCurrentCell();
+        robotRow = previous.row;
+        robotCol = previous.col;
 
-  Direction nextDirection;
+        return true;
+    }
 
-  /*
-  * DFS:
-  *
-  * 1. Find an unvisited neighbouring cell.
-  * 2. Move there.
-  * 3. If no unvisited cell exists,
-  *    backtrack to the previous cell.
-  */
 
-  if (findUnvisitedDirection(nextDirection)) {
+    // ============================================================
+    // MAPPING COMPLETE
+    // ============================================================
 
-  /*
-  * Store current position in DFS path.
-  */
+    bool mappingComplete() const {
 
-  if (pathLength < SIZE * SIZE) {
-  path[pathLength].row = robotRow;
-  path[pathLength].col = robotCol;
-  pathLength++;
-  }
+        return cellsVisited >= TARGET_CELLS;
+    }
 
-  /*
-  * Turn towards the next cell.
-  */
 
-  if (!faceDirection(robot, nextDirection)) {
-  robot.stopMotors();
-  return false;
-  }
+    // ============================================================
+    // ACCESSORS
+    // ============================================================
 
-  /*
-  * Drive exactly one maze cell.
-  */
+    uint8_t getRow() const {
+        return robotRow;
+    }
 
-  if (!robot.driveForwardOneCell()) {
-  robot.stopMotors();
-  return false;
-  }
+    uint8_t getCol() const {
+        return robotCol;
+    }
 
-  /*
-  * Update our internal maze position.
-  */
+    Direction getDirection() const {
+        return robotDirection;
+    }
 
-  moveToNextCell();
+    uint8_t getCellsVisited() const {
+        return cellsVisited;
+    }
 
-  /*
-  * Map the newly entered cell.
-  */
+    float getMappingPercentage() const {
 
-  mapCurrentCell();
+        return (
+            100.0f *
+            cellsVisited /
+            TARGET_CELLS
+        );
+    }
 
-  return true;
-  }
 
-  /*
-  * No unvisited neighbours.
-  *
-  * Backtrack to the previous cell.
-  */
+    // ============================================================
+    // DISPLAY MAP
+    // ============================================================
 
-  if (pathLength <= 1) {
-  robot.stopMotors();
-  return false;
-  }
+    void displayMap(
+        U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display
+    ) {
 
-  pathLength--;
+        constexpr uint8_t CELL_WIDTH = 6;
+        constexpr uint8_t CELL_HEIGHT = 6;
 
-  Position previous = path[pathLength - 1];
+        display.firstPage();
 
-  Direction backDirection;
+        do {
 
-  if (previous.row < robotRow) {
-  backDirection = NORTH;
-  }
+            display.setFont(
+                u8g2_font_6x10_tf
+            );
 
-  else if (previous.row > robotRow) {
-  backDirection = SOUTH;
-  }
+            display.setCursor(70, 20);
+            display.print(
+                getMappingPercentage(),
+                1
+            );
+            display.print("%");
 
-  else if (previous.col < robotCol) {
-  backDirection = WEST;
-  }
+            display.setCursor(70, 30);
+            display.print("mapped");
 
-  else {
-  backDirection = EAST;
-  }
 
-  Serial.println("Backtracking");
+            // ----------------------------------------------------
+            // DRAW MAZE
+            // ----------------------------------------------------
 
-  if (!faceDirection(robot, backDirection)) {
-  robot.stopMotors();
-  return false;
-  }
+            for (uint8_t row = 0; row < SIZE; row++) {
 
-  if (!robot.driveForwardOneCell()) {
-  robot.stopMotors();
-  return false;
-  }
+                for (uint8_t col = 0; col < SIZE; col++) {
 
-  robotRow = previous.row;
-  robotCol = previous.col;
+                    uint8_t x =
+                        1 + col * CELL_WIDTH;
 
-  return true;
-}
+                    uint8_t y =
+                        5 + row * CELL_HEIGHT;
 
-// ---------------- MAPPING COMPLETE ----------------
 
-bool mappingComplete() const {
-  return cellsVisited >= TARGET_CELLS;
-}
+                    // ------------------------------------------------
+                    // UNVISITED CELL
+                    // ------------------------------------------------
 
-// ---------------- ACCESSORS ----------------
+                    if (!isVisited(row, col)) {
 
-int getRow() const {
-return robotRow;
-}
+                        display.drawBox(
+                            x + 1,
+                            y + 1,
+                            CELL_WIDTH - 1,
+                            CELL_HEIGHT - 1
+                        );
+                    }
 
-int getCol() const {
-return robotCol;
-}
 
-Direction getDirection() const {
-return robotDirection;
-}
+                    // ------------------------------------------------
+                    // VISITED CELL
+                    // ------------------------------------------------
 
-uint8_t getCellsVisited() const {
-return cellsVisited;
-}
+                    else {
 
-float getMappingPercentage() const {
-return 100.0f * cellsVisited / TARGET_CELLS;
-}
+                        if (hasWall(
+                                row,
+                                col,
+                                NORTH
+                            )) {
 
-// ---------------- DISPLAY MAP ----------------
+                            display.drawLine(
+                                x,
+                                y,
+                                x + CELL_WIDTH,
+                                y
+                            );
+                        }
 
-void displayMap(U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display) {
+                        if (hasWall(
+                                row,
+                                col,
+                                EAST
+                            )) {
 
-const int CELL_WIDTH = 6;
-const int CELL_HEIGHT = 6;
+                            display.drawLine(
+                                x + CELL_WIDTH,
+                                y,
+                                x + CELL_WIDTH,
+                                y + CELL_HEIGHT
+                            );
+                        }
 
-display.firstPage();
+                        if (hasWall(
+                                row,
+                                col,
+                                SOUTH
+                            )) {
 
-do {
+                            display.drawLine(
+                                x,
+                                y + CELL_HEIGHT,
+                                x + CELL_WIDTH,
+                                y + CELL_HEIGHT
+                            );
+                        }
 
-/*
- * ----------------
- * PERCENTAGE
- * ----------------
- */
+                        if (hasWall(
+                                row,
+                                col,
+                                WEST
+                            )) {
 
-display.setFont(u8g2_font_6x10_tf);
+                            display.drawLine(
+                                x,
+                                y,
+                                x,
+                                y + CELL_HEIGHT
+                            );
+                        }
+                    }
 
-display.setCursor(70, 20);
-display.print(getMappingPercentage(), 1);
-display.print("%");
 
-display.setCursor(70, 30);
-display.print("mapped");
+                    // ------------------------------------------------
+                    // ROBOT
+                    // ------------------------------------------------
 
-/*
- * ----------------
- * MAZE
- * ----------------
- */
+                    if (
+                        row == robotRow &&
+                        col == robotCol
+                    ) {
 
-for (int row = 0; row < SIZE; row++) {
+                        display.drawBox(
+                            x + 2,
+                            y + 2,
+                            3,
+                            3
+                        );
+                    }
+                }
+            }
 
-for (int col = 0; col < SIZE; col++) {
+        } while (display.nextPage());
+    }
 
-int x = 1 + col * CELL_WIDTH;
-int y = 5 + row * CELL_HEIGHT;
 
-/*
- * ----------------
- * UNVISITED CELL
- * ----------------
- */
+    // ============================================================
+    // BFS SETTINGS
+    // ============================================================
 
-if (!isVisited(row, col)) {
+    void setGoal(
+        uint8_t row,
+        uint8_t col
+    ) {
 
-display.drawBox(x + 1, y + 1, CELL_WIDTH - 1, CELL_HEIGHT - 1);
-}
+        goalRow = row;
+        goalCol = col;
+    }
 
-/*
- * ----------------
- * VISITED CELL
- * ----------------
- */
 
-else {
+    bool atStart() const {
 
-if (hasWall(row, col, NORTH)) {
-display.drawLine(x, y, x + CELL_WIDTH, y);
-}
+        return (
+            robotRow == startRow &&
+            robotCol == startCol
+        );
+    }
 
-if (hasWall(row, col, EAST)) {
-display.drawLine(x + CELL_WIDTH, y, x + CELL_WIDTH, y + CELL_HEIGHT);
-}
 
-if (hasWall(row, col, SOUTH)) {
-display.drawLine(x, y + CELL_HEIGHT, x + CELL_WIDTH, y + CELL_HEIGHT);
-}
+    bool atGoal() const {
 
-if (hasWall(row, col, WEST)) {
-display.drawLine(x, y, x, y + CELL_HEIGHT);
-}
-}
+        return (
+            robotRow == goalRow &&
+            robotCol == goalCol
+        );
+    }
 
-/*
- * ----------------
- * ROBOT
- * ----------------
- */
 
-if (row == robotRow && col == robotCol) {
+    // ============================================================
+    // BFS SHORTEST PATH
+    // ============================================================
 
-display.drawBox(x + 2, y + 2, 3, 3);
-}
-}
-}
+    bool findShortestPath() {
 
-} while (display.nextPage());
-}
+        /*
+         * 255 means "no predecessor".
+         *
+         * There are only 81 cells, so uint8_t
+         * is enough to store a cell index.
+         */
 
-// ---------------- BFS ----------------
-void setGoal(uint8_t row, uint8_t col) {
-    goalRow = row;
-    goalCol = col;
-}
+        uint8_t previous[SIZE * SIZE];
 
-bool atStart() const {
-    return robotRow == startRow && robotCol == startCol;
-}
+        for (
+            uint8_t i = 0;
+            i < SIZE * SIZE;
+            i++
+        ) {
 
-bool atGoal() const {
-    return robotRow == goalRow && robotCol == goalCol;
-}
+            previous[i] = 255;
+        }
 
-bool findShortestPath() {
-  uint8_t queueRow[SIZE * SIZE];
-  uint8_t queueCol[SIZE * SIZE];
 
-  int previous[SIZE][SIZE];
+        /*
+         * Reuse path[] as the BFS queue.
+         *
+         * This avoids allocating:
+         *
+         * queueRow[81]
+         * queueCol[81]
+         *
+         * and saves about 162 bytes of stack.
+         */
 
-  for (int row = 0; row < SIZE; row++) {
-  for (int col = 0; col < SIZE; col++) {
-  previous[row][col] = -1;
-  }
-  }
+        uint8_t front = 0;
+        uint8_t back = 0;
 
-  int front = 0;
-  int back = 0;
 
-  queueRow[back] = startRow;
-  queueCol[back] = startCol;
-  back++;
+        path[back].row = startRow;
+        path[back].col = startCol;
 
-  previous[startRow][startCol] = startRow * SIZE + startCol;
+        back++;
 
-  while (front < back) {
 
-  int row = queueRow[front];
-  int col = queueCol[front];
-  front++;
+        uint8_t startIndex =
+            startRow * SIZE + startCol;
 
-  if (row == goalRow && col == goalCol) {
-  break;
-  }
+        previous[startIndex] =
+            startIndex;
 
-  Direction directions[4] = {
-  NORTH,
-  EAST,
-  SOUTH,
-  WEST
-  };
 
-  for (int i = 0; i < 4; i++) {
+        // --------------------------------------------------------
+        // BFS
+        // --------------------------------------------------------
 
-  Direction direction = directions[i];
+        while (front < back) {
 
-  if (hasWall(row, col, direction)) {
-  continue;
-  }
+            uint8_t row =
+                path[front].row;
 
-  int nextRow = row;
-  int nextCol = col;
+            uint8_t col =
+                path[front].col;
 
-  if (direction == NORTH) {
-  nextRow--;
-  }
+            front++;
 
-  else if (direction == EAST) {
-  nextCol++;
-  }
 
-  else if (direction == SOUTH) {
-  nextRow++;
-  }
+            if (
+                row == goalRow &&
+                col == goalCol
+            ) {
 
-  else {
-  nextCol--;
-  }
+                break;
+            }
 
-  if (!validCell(nextRow, nextCol)) {
-  continue;
-  }
 
-  if (previous[nextRow][nextCol] != -1) {
-  continue;
-  }
+            const Direction directions[4] = {
+                NORTH,
+                EAST,
+                SOUTH,
+                WEST
+            };
 
-  previous[nextRow][nextCol] = row * SIZE + col;
 
-  queueRow[back] = nextRow;
-  queueCol[back] = nextCol;
-  back++;
-  }
-  }
+            for (
+                uint8_t i = 0;
+                i < 4;
+                i++
+            ) {
 
-  if (previous[goalRow][goalCol] == -1) {
-  return false;
-  }
+                Direction direction =
+                    directions[i];
 
-  /*
-  * Reconstruct path backwards.
-  */
 
-  pathLength = 0;
+                if (hasWall(
+                        row,
+                        col,
+                        direction
+                    )) {
 
-  int row = goalRow;
-  int col = goalCol;
+                    continue;
+                }
 
-  while (!(row == startRow && col == startCol)) {
 
-  if (pathLength >= SIZE * SIZE) {
-  return false;
-  }
+                /*
+                 * Keep these as int because
+                 * NORTH from row 0 gives -1.
+                 */
 
-  path[pathLength].row = row;
-  path[pathLength].col = col;
-  pathLength++;
+                int nextRow = row;
+                int nextCol = col;
 
-  int previousIndex = previous[row][col];
 
-  row = previousIndex / SIZE;
-  col = previousIndex % SIZE;
-  }
+                if (direction == NORTH) {
 
-  path[pathLength].row = startRow;
-  path[pathLength].col = startCol;
-  pathLength++;
+                    nextRow--;
+                }
 
-  /*
-  * Reverse path so it goes:
-  *
-  * start -> goal
-  */
+                else if (direction == EAST) {
 
-  for (int i = 0; i < pathLength / 2; i++) {
+                    nextCol++;
+                }
 
-  Position temp = path[i];
+                else if (direction == SOUTH) {
 
-  path[i] = path[pathLength - 1 - i];
+                    nextRow++;
+                }
 
-  path[pathLength - 1 - i] = temp;
-  }
+                else {
 
-  return true;
-}
+                    nextCol--;
+                }
 
-bool driveShortestPath(Robot& robot) {
-  if (pathLength < 2) {
-      return false;
-  }
 
-  for (int i = 1; i < pathLength; i++) {
+                if (!validCell(
+                        nextRow,
+                        nextCol
+                    )) {
 
-      Position current = path[i - 1];
-      Position next = path[i];
+                    continue;
+                }
 
-      Direction direction;
 
-      if (next.row < current.row) {
-          direction = NORTH;
-      }
-      else if (next.row > current.row) {
-          direction = SOUTH;
-      }
-      else if (next.col > current.col) {
-          direction = EAST;
-      }
-      else {
-          direction = WEST;
-      }
+                uint8_t nextIndex =
+                    nextRow * SIZE + nextCol;
 
-      Serial.print("Moving to: ");
-      Serial.print(next.row);
-      Serial.print(",");
-      Serial.println(next.col);
 
-      if (!faceDirection(robot, direction)) {
-          robot.stopMotors();
-          return false;
-      }
+                /*
+                 * Already visited by BFS.
+                 */
 
-      if (!robot.driveForwardOneCell()) {
-          robot.stopMotors();
-          return false;
-      }
+                if (
+                    previous[nextIndex] != 255
+                ) {
 
-      robotRow = next.row;
-      robotCol = next.col;
-      robotDirection = direction;
-  }
+                    continue;
+                }
 
-  robot.stopMotors();
 
-  return true;
-}
+                /*
+                 * Store predecessor.
+                 */
 
-// ---------------- PRIVATE ----------------
+                previous[nextIndex] =
+                    row * SIZE + col;
+
+
+                /*
+                 * Add cell to BFS queue.
+                 */
+
+                path[back].row =
+                    nextRow;
+
+                path[back].col =
+                    nextCol;
+
+                back++;
+            }
+        }
+
+
+        // --------------------------------------------------------
+        // CHECK WHETHER GOAL WAS FOUND
+        // --------------------------------------------------------
+
+        uint8_t goalIndex =
+            goalRow * SIZE + goalCol;
+
+
+        if (
+            previous[goalIndex] == 255
+        ) {
+
+            return false;
+        }
+
+
+        // --------------------------------------------------------
+        // RECONSTRUCT PATH
+        // --------------------------------------------------------
+
+        pathLength = 0;
+
+        int row = goalRow;
+        int col = goalCol;
+
+
+        while (
+            !(row == startRow &&
+              col == startCol)
+        ) {
+
+            if (
+                pathLength >=
+                SIZE * SIZE
+            ) {
+
+                return false;
+            }
+
+
+            path[pathLength].row =
+                row;
+
+            path[pathLength].col =
+                col;
+
+            pathLength++;
+
+
+            uint8_t currentIndex =
+                row * SIZE + col;
+
+
+            uint8_t previousIndex =
+                previous[currentIndex];
+
+
+            row =
+                previousIndex / SIZE;
+
+            col =
+                previousIndex % SIZE;
+        }
+
+
+        /*
+         * Add start cell.
+         */
+
+        path[pathLength].row =
+            startRow;
+
+        path[pathLength].col =
+            startCol;
+
+        pathLength++;
+
+
+        // --------------------------------------------------------
+        // REVERSE PATH
+        // --------------------------------------------------------
+
+        for (
+            uint8_t i = 0;
+            i < pathLength / 2;
+            i++
+        ) {
+
+            Position temp =
+                path[i];
+
+
+            path[i] =
+                path[pathLength - 1 - i];
+
+
+            path[pathLength - 1 - i] =
+                temp;
+        }
+
+
+        return true;
+    }
+
+
+    // ============================================================
+    // DRIVE SHORTEST PATH
+    // ============================================================
+
+    bool driveShortestPath(
+        Robot& robot
+    ) {
+
+        if (pathLength < 2) {
+            return false;
+        }
+
+
+        for (
+            uint8_t i = 1;
+            i < pathLength;
+            i++
+        ) {
+
+            Position current =
+                path[i - 1];
+
+            Position next =
+                path[i];
+
+
+            Direction direction;
+
+
+            if (next.row < current.row) {
+
+                direction = NORTH;
+            }
+
+            else if (next.row > current.row) {
+
+                direction = SOUTH;
+            }
+
+            else if (next.col > current.col) {
+
+                direction = EAST;
+            }
+
+            else {
+
+                direction = WEST;
+            }
+
+
+            if (!faceDirection(
+                    robot,
+                    direction
+                )) {
+
+                robot.stopMotors();
+                return false;
+            }
+
+
+            if (!robot.driveForwardOneCell()) {
+
+                robot.stopMotors();
+                return false;
+            }
+
+
+            robotRow = next.row;
+            robotCol = next.col;
+            robotDirection = direction;
+        }
+
+
+        robot.stopMotors();
+
+        return true;
+    }
+
 
 private:
 
-uint8_t startRow;
-uint8_t startCol;
+    // ============================================================
+    // START / GOAL
+    // ============================================================
 
-uint8_t goalRow;
-uint8_t goalCol;
+    uint8_t startRow;
+    uint8_t startCol;
 
-// ---------------- SENSORS ----------------
+    uint8_t goalRow;
+    uint8_t goalCol;
 
-Lidar& lidarL;
-Lidar& lidarR;
-Lidar& lidarF;
 
-// ---------------- MAZE DATA ----------------
+    // ============================================================
+    // SENSORS
+    // ============================================================
 
-/*
- * Each cell uses one byte for walls.
- *
- * Bit 0 = NORTH
- * Bit 1 = EAST
- * Bit 2 = SOUTH
- * Bit 3 = WEST
- */
+    Lidar& lidarL;
+    Lidar& lidarR;
+    Lidar& lidarF;
 
-uint8_t walls[SIZE][SIZE];
 
-/*
- * Each cell uses one byte for
- * whether each wall is known.
- */
+    // ============================================================
+    // MAZE DATA
+    // ============================================================
 
-uint8_t knownWalls[SIZE][SIZE];
+    /*
+     * Each cell uses one byte for walls.
+     *
+     * Bit 0 = NORTH
+     * Bit 1 = EAST
+     * Bit 2 = SOUTH
+     * Bit 3 = WEST
+     */
 
-/*
- * One bit per visited cell.
- *
- * 81 cells = 11 bytes.
- */
+    uint8_t walls[SIZE][SIZE];
 
-uint8_t visited[(SIZE * SIZE + 7) / 8];
 
-// ---------------- ROBOT STATE ----------------
+    /*
+     * Each cell uses one byte for
+     * whether each wall is known.
+     */
 
-uint8_t robotRow;
-uint8_t robotCol;
+    uint8_t knownWalls[SIZE][SIZE];
 
-Direction robotDirection;
 
-// ---------------- MAPPING ----------------
+    /*
+     * One bit per visited cell.
+     *
+     * 81 cells = 11 bytes.
+     */
 
-uint8_t cellsVisited;
+    uint8_t visited[
+        (SIZE * SIZE + 7) / 8
+    ];
 
-// ---------------- DFS PATH ----------------
 
-Position path[SIZE * SIZE];
-uint8_t pathLength;
+    // ============================================================
+    // ROBOT STATE
+    // ============================================================
 
-// ---------------- WALL BIT ----------------
+    uint8_t robotRow;
+    uint8_t robotCol;
 
-uint8_t directionBit(Direction direction) const {
-return (1 << direction);
-}
+    Direction robotDirection;
+    Direction startDirection;
 
-// ---------------- VALIDATION ----------------
 
-bool validCell(int row, int col) const {
+    // ============================================================
+    // MAPPING
+    // ============================================================
 
-return (
-row >= 0 &&
-row < SIZE &&
-col >= 0 &&
-col < SIZE
-);
-}
+    uint8_t cellsVisited;
 
+
+    // ============================================================
+    // DFS / BFS PATH
+    // ============================================================
+
+    /*
+     * During DFS:
+     *
+     * path[] = DFS stack
+     *
+     * During BFS:
+     *
+     * path[] = BFS queue, then reconstructed
+     *          shortest path.
+     */
+
+    Position path[
+        SIZE * SIZE
+    ];
+
+    uint8_t pathLength;
+
+
+    // ============================================================
+    // WALL BIT
+    // ============================================================
+
+    uint8_t directionBit(
+        Direction direction
+    ) const {
+
+        return (1 << direction);
+    }
+
+
+    // ============================================================
+    // VALIDATION
+    // ============================================================
+
+    bool validCell(
+        int row,
+        int col
+    ) const {
+
+        return (
+            row >= 0 &&
+            row < SIZE &&
+            col >= 0 &&
+            col < SIZE
+        );
+    }
 };
 
 }

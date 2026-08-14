@@ -33,10 +33,10 @@ mtrn3100::DualEncoder encoder(EN_A, EN_B, EN_A2, EN_B2);
 MPU6050 mpu(Wire);
 
 // robot
-Robot robot(motorL, motorR, encoder, mpu);
+Robot robot(motorL, motorR, encoder, mpu, lidarL, lidarR, lidarF);
 
 // maze
-mtrn3100::Maze maze(lidarL, lidarR, lidarF, mtrn3100::Maze::EAST, 1, 1, 7, 7);
+mtrn3100::Maze maze(lidarL, lidarR, lidarF, mtrn3100::Maze::NORTH, 7, 1, 8, 3);
 
 // display
 U8G2_SSD1306_128X64_NONAME_1_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
@@ -65,6 +65,7 @@ void setup() {
     }
     delay(1000);
     mpu.calcOffsets(true, true);
+    robot.initialiseHeading();
 
     // lidar init
     lidarF.init();
@@ -75,15 +76,6 @@ void setup() {
 }
 
 void loop() {
-    Serial.print("Front: ");
-    Serial.print(frontDistance);
-    Serial.print(" mm | Left: ");
-    Serial.print(leftDistance);
-    Serial.print(" mm | Right: ");
-    Serial.print(rightDistance);
-    Serial.println(" mm");
-
-
     static bool pathFound = false;
     static bool pathDriven = false;
 
