@@ -38,7 +38,7 @@ mtrn3100::Lidar frontLidar;
 const char commandString[] = "rfflflfrfrfflflf";
 const int COMMAND_COUNT = sizeof(commandString) - 1;
 
-const float CELL_DISTANCE_M = 0.195;
+const float CELL_DISTANCE_M = 0.185;
 const float WHEEL_RADIUS_M = 0.017;
 const int FORWARD_PWM = 100;
 const int MAX_FORWARD_CORRECTION = 35;
@@ -65,13 +65,13 @@ const unsigned long SIDE_NUDGE_COOLDOWN_MS = 500;
 // A normal 'f' command is completed by the encoders. If a wall is genuinely
 // close in front, finish only that 'f' command and immediately continue to the
 // next planned command (usually a turn); do not stop the complete sequence.
-const int FRONT_WALL_END_MM = 55;
+const int FRONT_WALL_END_MM = 15;
 
 const unsigned long LIDAR_UPDATE_MS = 45;
 
 const unsigned long DRIVE_TIMEOUT = 6000;
 const unsigned long TURN_TIMEOUT = 6000;
-const unsigned long SETTLE_TIME = 150;
+const unsigned long SETTLE_TIME = 50;
 
 float targetHeading = 0;
 bool systemReady = false;
@@ -255,13 +255,10 @@ bool driveForwardOneCell() {
             return true;
         }
 
-        if (fabs(distanceError) <= DISTANCE_TOLERANCE) {
+        if (averageTravel >= targetRotation - DISTANCE_TOLERANCE) {
             stopMotors();
-            if (settledSince == 0) settledSince = millis();
-            if (millis() - settledSince >= SETTLE_TIME) {
-                Serial.println("Forward complete");
-                return true;
-            }
+            Serial.println("Forward complete");
+            return true;
         } else {
             settledSince = 0;
             setForwardPWM(FORWARD_PWM - totalCorrection, FORWARD_PWM + totalCorrection);
