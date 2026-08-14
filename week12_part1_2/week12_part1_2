@@ -35,36 +35,37 @@ mtrn3100::Lidar leftLidar;
 mtrn3100::Lidar rightLidar;
 mtrn3100::Lidar frontLidar;
 
-const char commandString[] = "fflflfrfrffrfff";
+const char commandString[] = "rfflflfrfrfflflf";
 const int COMMAND_COUNT = sizeof(commandString) - 1;
 
 const float CELL_DISTANCE_M = 0.195;
 const float WHEEL_RADIUS_M = 0.017;
-const int FORWARD_PWM = 85;
+const int FORWARD_PWM = 100;
 const int MAX_FORWARD_CORRECTION = 35;
 const float HEADING_KP = 2.0;
 
 const int MAX_TURN_PWM = 70;
 const int MEDIUM_TURN_PWM = 48;
 const int SLOW_TURN_PWM = 30;
-const float TURN_TOLERANCE = 5.0;
+const float TURN_TOLERANCE = 2.0;
 const float DISTANCE_TOLERANCE = 0.15;
 
-// Side LiDARs are an emergency correction only. They do not perform continuous
-// wall following and do not affect the robot above the activation distance.
-const int SIDE_EMERGENCY_ENTER_MM = 35;
-const int SIDE_EMERGENCY_EXIT_MM = 50;
-const int SIDE_EMERGENCY_CORRECTION = 10;
-const int SIDE_EMERGENCY_CONFIRMATIONS = 2;
-const int FRONT_STOP_MM = 10;
-
-// Front LiDAR worst-case recovery.
-// Normal driving is untouched. These are used only if something is
-// dangerously close in front of the robot.
-const int REVERSE_PWM = 65;
-const unsigned long REVERSE_TIME_MS = 250;
-const unsigned long REVERSE_SETTLE_MS = 120;
-const float RECOVERY_TURN_DEG = 12.0;
+// The IMU remains the main heading controller. When the robot is between two
+// visible side walls, the side LiDARs make only a small correction toward the
+// middle; the emergency nudge remains a last-resort safety correction.
+const int SIDE_CENTRE_MIN_MM = 25;
+const int SIDE_CENTRE_MAX_MM = 120;
+const int SIDE_CENTRE_DEADBAND_MM = 12;
+const int SIDE_CENTRE_CORRECTION = 4;
+const int SIDE_EMERGENCY_MM = 15;
+const int SIDE_EMERGENCY_CORRECTION = 5;
+const int SIDE_EMERGENCY_CONFIRMATIONS = 4;
+const unsigned long SIDE_NUDGE_DURATION_MS = 50;
+const unsigned long SIDE_NUDGE_COOLDOWN_MS = 500;
+// A normal 'f' command is completed by the encoders. If a wall is genuinely
+// close in front, finish only that 'f' command and immediately continue to the
+// next planned command (usually a turn); do not stop the complete sequence.
+const int FRONT_WALL_END_MM = 55;
 
 const unsigned long LIDAR_UPDATE_MS = 45;
 
@@ -77,15 +78,11 @@ bool systemReady = false;
 bool sequenceFailed = false;
 int commandIndex = 0;
 
-enum SideCorrectionState {
-    SIDE_CLEAR,
-    TOO_CLOSE_LEFT,
-    TOO_CLOSE_RIGHT
-};
-
-SideCorrectionState sideCorrectionState = SIDE_CLEAR;
 int leftCloseCount = 0;
 int rightCloseCount = 0;
+int activeSideNudge = 0;
+unsigned long sideNudgeEndsAt = 0;
+unsigned long sideNudgeCooldownEndsAt = 0;
 
 void stopMotors() {
     motor1.setPWM(0);
@@ -103,13 +100,6 @@ void setForwardPWM(int leftPWM, int rightPWM) {
     rightPWM = constrain(rightPWM, -120, 120);
     motor1.setPWM(leftPWM);
     motor2.setPWM(-rightPWM);
-}
-
-void reverseBriefly() {
-    setForwardPWM(-REVERSE_PWM, -REVERSE_PWM);
-    delay(REVERSE_TIME_MS);
-    stopMotors();
-    delay(REVERSE_SETTLE_MS);
 }
 
 void setTurnPWM(int pwm) {
@@ -152,9 +142,28 @@ int calculateLidarCorrection(int leftMM, int rightMM) {
     const bool leftValid = leftMM >= 0;
     const bool rightValid = rightMM >= 0;
 
-    // Require repeated close readings so one noisy sample cannot turn the car.
-    const bool leftClose = leftValid && leftMM <= SIDE_EMERGENCY_ENTER_MM;
-    const bool rightClose = rightValid && rightMM <= SIDE_EMERGENCY_ENTER_MM;
+    // Normal case: centre only when both sensors see corridor walls at useful
+    // distances. This is deliberately weaker than IMU heading correction.
+    if (leftValid && rightValid &&
+        leftMM >= SIDE_CENTRE_MIN_MM && leftMM <= SIDE_CENTRE_MAX_MM &&
+        rightMM >= SIDE_CENTRE_MIN_MM && rightMM <= SIDE_CENTRE_MAX_MM) {
+        int sideError = leftMM - rightMM;
+        if (abs(sideError) > SIDE_CENTRE_DEADBAND_MM) {
+            // Positive error means there is more room on the left, so steer left.
+            return constrain(
+                sideError / 6,
+                -SIDE_CENTRE_CORRECTION,
+                SIDE_CENTRE_CORRECTION
+            );
+        }
+    }
+
+    // Do not immediately retrigger an emergency pulse.
+    if ((long)(millis() - sideNudgeCooldownEndsAt) < 0) return 0;
+
+    // Require repeated close readings so one noisy sample cannot steer it.
+    const bool leftClose = leftValid && leftMM <= SIDE_EMERGENCY_MM;
+    const bool rightClose = rightValid && rightMM <= SIDE_EMERGENCY_MM;
     leftCloseCount = leftClose ? leftCloseCount + 1 : 0;
     rightCloseCount = rightClose ? rightCloseCount + 1 : 0;
 
@@ -163,40 +172,21 @@ int calculateLidarCorrection(int leftMM, int rightMM) {
     const bool rightConfirmed =
         rightCloseCount >= SIDE_EMERGENCY_CONFIRMATIONS;
 
-    // Hysteresis: once correction starts, keep it until that wall is beyond
-    // the larger EXIT distance. If the opposite wall becomes even closer,
-    // change direction so the robot always moves toward the greater clearance.
-    if (sideCorrectionState == TOO_CLOSE_LEFT) {
-        if (rightConfirmed && (!leftValid || rightMM < leftMM)) {
-            sideCorrectionState = TOO_CLOSE_RIGHT;
-        } else if (!leftValid || leftMM >= SIDE_EMERGENCY_EXIT_MM) {
-            sideCorrectionState = SIDE_CLEAR;
-            leftCloseCount = 0;
-        }
-    } else if (sideCorrectionState == TOO_CLOSE_RIGHT) {
-        if (leftConfirmed && (!rightValid || leftMM < rightMM)) {
-            sideCorrectionState = TOO_CLOSE_LEFT;
-        } else if (!rightValid || rightMM >= SIDE_EMERGENCY_EXIT_MM) {
-            sideCorrectionState = SIDE_CLEAR;
-            rightCloseCount = 0;
-        }
+    if (leftConfirmed && rightConfirmed) {
+        // Nudge toward the side with more free space.
+        if (leftMM > rightMM) activeSideNudge = SIDE_EMERGENCY_CORRECTION;
+        else if (rightMM > leftMM) activeSideNudge = -SIDE_EMERGENCY_CORRECTION;
+    } else if (leftConfirmed) {
+        activeSideNudge = -SIDE_EMERGENCY_CORRECTION;  // away from left wall
+    } else if (rightConfirmed) {
+        activeSideNudge = SIDE_EMERGENCY_CORRECTION;   // away from right wall
     }
 
-    if (sideCorrectionState == SIDE_CLEAR && leftConfirmed && rightConfirmed) {
-        // Both sides are close: move toward whichever side has more clearance.
-        if (leftMM > rightMM) sideCorrectionState = TOO_CLOSE_RIGHT;
-        else if (rightMM > leftMM) sideCorrectionState = TOO_CLOSE_LEFT;
-    } else if (sideCorrectionState == SIDE_CLEAR && leftConfirmed) {
-        sideCorrectionState = TOO_CLOSE_LEFT;
-    } else if (sideCorrectionState == SIDE_CLEAR && rightConfirmed) {
-        sideCorrectionState = TOO_CLOSE_RIGHT;
-    }
-
-    if (sideCorrectionState == TOO_CLOSE_LEFT) {
-        return -SIDE_EMERGENCY_CORRECTION;
-    }
-    if (sideCorrectionState == TOO_CLOSE_RIGHT) {
-        return SIDE_EMERGENCY_CORRECTION;
+    if (activeSideNudge != 0) {
+        sideNudgeEndsAt = millis() + SIDE_NUDGE_DURATION_MS;
+        leftCloseCount = 0;
+        rightCloseCount = 0;
+        return activeSideNudge;
     }
 
     // Normal case: the LiDAR makes no steering change at all.
@@ -215,13 +205,24 @@ bool driveForwardOneCell() {
     int lidarCorrection = 0;
     int frontMM = -1;
 
-    // Do not carry an emergency correction over from a previous cell or turn.
-    sideCorrectionState = SIDE_CLEAR;
+    // Do not carry a side nudge over from a previous cell or turn.
     leftCloseCount = 0;
     rightCloseCount = 0;
+    activeSideNudge = 0;
+    sideNudgeEndsAt = 0;
+    sideNudgeCooldownEndsAt = 0;
 
     while (millis() - startTime < DRIVE_TIMEOUT) {
         mpu.update();
+
+        // End the brief side nudge even between LiDAR samples. This prevents
+        // a 90 ms request from being held for an extra sensor interval.
+        if (activeSideNudge != 0 &&
+            (long)(millis() - sideNudgeEndsAt) >= 0) {
+            activeSideNudge = 0;
+            lidarCorrection = 0;
+            sideNudgeCooldownEndsAt = millis() + SIDE_NUDGE_COOLDOWN_MS;
+        }
 
         if (millis() - lastLidarUpdate >= LIDAR_UPDATE_MS) {
             int leftMM = readLidarMM(leftLidar);
@@ -236,57 +237,6 @@ bool driveForwardOneCell() {
             Serial.print(" side correction: "); Serial.println(lidarCorrection);
         }
 
-        if (frontMM >= 0 && frontMM <= FRONT_STOP_MM) {
-            stopMotors();
-
-            Serial.print("Front obstacle detected at ");
-            Serial.print(frontMM);
-            Serial.println(" mm");
-
-            // Back away a little first.
-            reverseBriefly();
-
-            // Check which side has more free space.
-            int leftMM = readLidarMM(leftLidar);
-            int rightMM = readLidarMM(rightLidar);
-
-            Serial.print("Recovery check - L: ");
-            Serial.print(leftMM);
-            Serial.print(" R: ");
-            Serial.println(rightMM);
-
-            // Only make a SMALL recovery turn. The real 90-degree turns are
-            // still controlled by the command string.
-            if (leftMM >= 0 && rightMM >= 0) {
-                if (leftMM > rightMM) {
-                    Serial.println("Recovery: turning slightly LEFT");
-                    turnToHeading(targetHeading + RECOVERY_TURN_DEG);
-                } else if (rightMM > leftMM) {
-                    Serial.println("Recovery: turning slightly RIGHT");
-                    turnToHeading(targetHeading - RECOVERY_TURN_DEG);
-                } else {
-                    Serial.println("Recovery: equal side clearance, no turn");
-                }
-            } else if (leftMM >= 0) {
-                Serial.println("Recovery: only left valid -> slight LEFT");
-                turnToHeading(targetHeading + RECOVERY_TURN_DEG);
-            } else if (rightMM >= 0) {
-                Serial.println("Recovery: only right valid -> slight RIGHT");
-                turnToHeading(targetHeading - RECOVERY_TURN_DEG);
-            } else {
-                Serial.println("Recovery: no valid side readings, reverse only");
-            }
-
-            // Refresh readings and continue the SAME forward command.
-            leftMM = readLidarMM(leftLidar);
-            rightMM = readLidarMM(rightLidar);
-            frontMM = readLidarMM(frontLidar);
-            lidarCorrection = calculateLidarCorrection(leftMM, rightMM);
-            lastLidarUpdate = millis();
-
-            continue;
-        }
-
         float leftTravel = encoder.getLeftRotation() - leftStart;
         float rightTravel = (-encoder.getRightRotation()) - rightStart;
         float averageTravel = (leftTravel + rightTravel) / 2.0;
@@ -294,6 +244,16 @@ bool driveForwardOneCell() {
         float headingError = wrapAngle(targetHeading - mpu.getAngleZ());
         int imuCorrection = constrain((int)(HEADING_KP * headingError), -MAX_FORWARD_CORRECTION, MAX_FORWARD_CORRECTION);
         int totalCorrection = constrain(imuCorrection + lidarCorrection, -MAX_FORWARD_CORRECTION, MAX_FORWARD_CORRECTION);
+
+        // A detected close front wall ends this forward command only. Returning
+        // true advances commandIndex, so the next command runs normally.
+        if (frontMM >= 0 && frontMM <= FRONT_WALL_END_MM) {
+            stopMotors();
+            Serial.print("Front wall detected at ");
+            Serial.print(frontMM);
+            Serial.println(" mm; continuing to next command");
+            return true;
+        }
 
         if (fabs(distanceError) <= DISTANCE_TOLERANCE) {
             stopMotors();
