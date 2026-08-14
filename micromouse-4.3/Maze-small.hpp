@@ -18,7 +18,7 @@ public:
     static constexpr uint8_t SIZE = 9;
     // A 9 x 9 board has 81 positions, but the octagonal maze excludes the
     // three cut-off positions at each corner: 81 - 12 = 69 usable cells.
-    static constexpr uint8_t TARGET_CELLS = 69;
+    static constexpr uint8_t TARGET_CELLS = 59;
     // A wall must be close enough to be the boundary of the current cell.
     // Far/ambiguous readings are deliberately treated as open space.
     static constexpr uint8_t WALL_THRESHOLD = 80;
