@@ -16,8 +16,12 @@ public:
     // ============================================================
 
     static constexpr uint8_t SIZE = 9;
-    static constexpr uint8_t TARGET_CELLS = 59;
-    static constexpr uint8_t WALL_THRESHOLD = 120;
+    // A 9 x 9 board has 81 positions, but the octagonal maze excludes the
+    // three cut-off positions at each corner: 81 - 12 = 69 usable cells.
+    static constexpr uint8_t TARGET_CELLS = 69;
+    // A wall must be close enough to be the boundary of the current cell.
+    // Far/ambiguous readings are deliberately treated as open space.
+    static constexpr uint8_t WALL_THRESHOLD = 80;
 
 
     // ============================================================
@@ -98,19 +102,20 @@ public:
             visited[i] = 0;
         }
 
-        /*
-         * The outside boundary of the maze
-         * is known to be a wall.
-         */
-
-        for (uint8_t col = 0; col < SIZE; col++) {
-            setWall(0, col, NORTH, true);
-            setWall(SIZE - 1, col, SOUTH, true);
-        }
-
+        // Add permanent walls around the rectangular outer edge and the four
+        // cut-off corners of the physical octagonal maze.
         for (uint8_t row = 0; row < SIZE; row++) {
-            setWall(row, 0, WEST, true);
-            setWall(row, SIZE - 1, EAST, true);
+            for (uint8_t col = 0; col < SIZE; col++) {
+                if (!validCell(row, col)) {
+                    continue;
+                }
+
+                for (uint8_t direction = NORTH; direction <= WEST; direction++) {
+                    if (isMazeBoundary(row, col, (Direction)direction)) {
+                        setWall(row, col, (Direction)direction, true);
+                    }
+                }
+            }
         }
     }
 
@@ -122,18 +127,27 @@ public:
     void mapCurrentCell() {
 
         uint16_t leftDistance = lidarL.readDistance();
+        bool leftValid = lidarL.isLastReadValid();
         uint16_t frontDistance = lidarF.readDistance();
+        bool frontValid = lidarF.isLastReadValid();
         uint16_t rightDistance = lidarR.readDistance();
+        bool rightValid = lidarR.isLastReadValid();
 
+        // An invalid/out-of-range reading must mean "no wall detected". The
+        // Lidar class otherwise returns its last valid value, which may be a
+        // stale close-wall measurement from an earlier cell.
         bool leftWall =
+            leftValid &&
             leftDistance < WALL_THRESHOLD &&
             leftDistance != 0;
 
         bool frontWall =
+            frontValid &&
             frontDistance < WALL_THRESHOLD &&
             frontDistance != 0;
 
         bool rightWall =
+            rightValid &&
             rightDistance < WALL_THRESHOLD &&
             rightDistance != 0;
 
@@ -275,6 +289,11 @@ public:
         }
 
         if (col == SIZE - 1 && direction == EAST) {
+            hasWall = true;
+        }
+
+        // The diagonal cut-offs at each corner are also permanent boundaries.
+        if (isMazeBoundary(row, col, direction)) {
             hasWall = true;
         }
 
@@ -748,6 +767,14 @@ public:
                 return false;
             }
 
+            // A front-lidar stop is not a completed cell movement. Stay in
+            // the current map cell and let the next mapping step choose a
+            // different known-open direction.
+            if (!robot.didLastForwardCompleteCell()) {
+                mapCurrentCell();
+                return true;
+            }
+
             /*
              * Update robot position.
              */
@@ -831,6 +858,13 @@ public:
 
         if (!robot.driveForwardOneCell()) {
 
+            robot.stopMotors();
+            return false;
+        }
+
+        // Do not claim that the robot returned to its previous cell unless
+        // the encoder-based one-cell movement actually completed.
+        if (!robot.didLastForwardCompleteCell()) {
             robot.stopMotors();
             return false;
         }
@@ -923,6 +957,12 @@ public:
             for (uint8_t row = 0; row < SIZE; row++) {
 
                 for (uint8_t col = 0; col < SIZE; col++) {
+
+                    // The three cells in each physical corner are outside the
+                    // octagonal maze, so do not draw or visit them.
+                    if (!validCell(row, col)) {
+                        continue;
+                    }
 
                     uint8_t x =
                         1 + col * CELL_WIDTH;
@@ -1419,6 +1459,12 @@ public:
                 return false;
             }
 
+            // The planned-path state is updated only after a full cell move.
+            if (!robot.didLastForwardCompleteCell()) {
+                robot.stopMotors();
+                return false;
+            }
+
 
             robotRow = next.row;
             robotCol = next.col;
@@ -1549,13 +1595,36 @@ private:
         int row,
         int col
     ) const {
+        if (row < 0 || row >= SIZE || col < 0 || col >= SIZE) {
+            return false;
+        }
 
-        return (
-            row >= 0 &&
-            row < SIZE &&
-            col >= 0 &&
-            col < SIZE
-        );
+        // Three excluded cells at each corner of the 9 x 9 bounding square.
+        const bool topLeft = (row == 0 && col <= 1) || (row == 1 && col == 0);
+        const bool topRight = (row == 0 && col >= SIZE - 2) ||
+                              (row == 1 && col == SIZE - 1);
+        const bool bottomLeft = (row == SIZE - 1 && col <= 1) ||
+                                (row == SIZE - 2 && col == 0);
+        const bool bottomRight = (row == SIZE - 1 && col >= SIZE - 2) ||
+                                 (row == SIZE - 2 && col == SIZE - 1);
+
+        return !(topLeft || topRight || bottomLeft || bottomRight);
+    }
+
+    bool isMazeBoundary(
+        int row,
+        int col,
+        Direction direction
+    ) const {
+        int neighbourRow = row;
+        int neighbourCol = col;
+
+        if (direction == NORTH) neighbourRow--;
+        else if (direction == EAST) neighbourCol++;
+        else if (direction == SOUTH) neighbourRow++;
+        else neighbourCol--;
+
+        return !validCell(neighbourRow, neighbourCol);
     }
 };
 
