@@ -16,8 +16,8 @@ public:
     // ============================================================
 
     static constexpr uint8_t SIZE = 9;
-    // A 9 x 9 board has 81 positions, but the octagonal maze excludes the
-    // three cut-off positions at each corner: 81 - 12 = 69 usable cells.
+    // Map 59 of the 69 usable octagonal-maze cells before returning to start
+    // and calculating the BFS route to the goal (about 85%).
     static constexpr uint8_t TARGET_CELLS = 59;
     // A wall must be close enough to be the boundary of the current cell.
     // Far/ambiguous readings are deliberately treated as open space.
@@ -725,9 +725,12 @@ public:
     // DFS MAPPING STEP
     // ============================================================
 
-    bool mappingStep(Robot& robot) {
+    bool mappingStep(
+        Robot& robot,
+        U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display
+    ) {
 
-        if (cellsVisited >= TARGET_CELLS) {
+        if (mappingComplete()) {
 
             robot.stopMotors();
             return false;
@@ -801,6 +804,7 @@ public:
              */
 
             mapCurrentCell();
+            displayMap(display);
 
             return true;
         }
@@ -875,6 +879,7 @@ public:
 
         robotRow = previous.row;
         robotCol = previous.col;
+        displayMap(display);
 
         return true;
     }
@@ -886,7 +891,53 @@ public:
 
     bool mappingComplete() const {
 
-        return cellsVisited >= TARGET_CELLS;
+        // Do not start the return/BFS phase until enough of the maze is mapped
+        // AND the goal itself has been mapped.
+        return cellsVisited >= TARGET_CELLS &&
+               isVisited(goalRow, goalCol);
+    }
+
+
+    // ============================================================
+    // RETURN TO START USING THE DFS STACK
+    // ============================================================
+
+    bool returnToStart(
+        Robot& robot,
+        U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display
+    ) {
+
+        // path[0] is the start cell and path[pathLength - 1] is the current
+        // cell. Follow the recorded DFS route backwards one full cell at a time.
+        while (pathLength > 1) {
+
+            Position previous = path[pathLength - 2];
+            Direction returnDirection;
+
+            if (previous.row < robotRow) returnDirection = NORTH;
+            else if (previous.row > robotRow) returnDirection = SOUTH;
+            else if (previous.col < robotCol) returnDirection = WEST;
+            else returnDirection = EAST;
+
+            if (!faceDirection(robot, returnDirection)) {
+                robot.stopMotors();
+                return false;
+            }
+
+            if (!robot.driveForwardOneCell() ||
+                !robot.didLastForwardCompleteCell()) {
+                robot.stopMotors();
+                return false;
+            }
+
+            robotRow = previous.row;
+            robotCol = previous.col;
+            robotDirection = returnDirection;
+            pathLength--;
+            displayMap(display);
+        }
+
+        return atStart();
     }
 
 
@@ -914,8 +965,8 @@ public:
 
         return (
             100.0f *
-            cellsVisited /
-            TARGET_CELLS
+            min(cellsVisited, TARGET_CELLS) /
+            69
         );
     }
 
@@ -1398,7 +1449,8 @@ public:
     // ============================================================
 
     bool driveShortestPath(
-        Robot& robot
+        Robot& robot,
+        U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display
     ) {
 
         if (pathLength < 2) {
@@ -1469,6 +1521,7 @@ public:
             robotRow = next.row;
             robotCol = next.col;
             robotDirection = direction;
+            displayMap(display);
         }
 
 

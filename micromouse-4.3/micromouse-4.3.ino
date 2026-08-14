@@ -89,6 +89,7 @@ void setup() {
 void loop() {
     static bool pathFound = false;
     static bool pathDriven = false;
+    static bool returnedToStart = false;
 
     maze.displayMap(display);
 
@@ -96,12 +97,28 @@ void loop() {
 
     if (!maze.mappingComplete()) {
 
-        maze.mappingStep(robot);
+        maze.mappingStep(robot, display);
     }
 
     // ---------------- SHORTEST PATH ----------------
 
     else {
+
+        // Mapping stops at 59 cells. Return along the known DFS path before
+        // BFS, so the physical robot and BFS start position are both correct.
+        if (!returnedToStart) {
+
+            Serial.println("Mapping complete; returning to start...");
+            returnedToStart = maze.returnToStart(robot, display);
+
+            if (!returnedToStart) {
+                Serial.println("Could not return to start");
+                robot.stopMotors();
+                return;
+            }
+
+            Serial.println("Returned to start");
+        }
 
         if (!pathFound) {
 
@@ -121,7 +138,7 @@ void loop() {
 
         if (pathFound && !pathDriven) {
 
-            pathDriven = maze.driveShortestPath(robot);
+            pathDriven = maze.driveShortestPath(robot, display);
 
             if (pathDriven) {
                 Serial.println("Reached goal");

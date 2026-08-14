@@ -51,9 +51,12 @@ public:
 
         if (lastReadValid) {
             lastValid = d;
+            return d;
         }
 
-        return lastValid;
+        // Do not return a stale close-wall distance when the new reading is
+        // invalid or out of range. Callers should treat this as no detection.
+        return 0;
     }
 
     bool isLastReadValid() const {

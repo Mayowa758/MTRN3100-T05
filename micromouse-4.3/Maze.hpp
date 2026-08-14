@@ -15,7 +15,7 @@ public:
 static const int SIZE = 9;
 
 // Change this after testing your actual maze
-const uint16_t WALL_THRESHOLD = 100;
+const uint16_t WALL_THRESHOLD = 80;
 
 
 // ---------------- DIRECTIONS ----------------
@@ -83,12 +83,17 @@ void clearMap() {
 void mapCurrentCell() {
 
   uint16_t leftDistance = lidarL.readDistance();
+  bool leftValid = lidarL.isLastReadValid();
   uint16_t frontDistance = lidarF.readDistance();
+  bool frontValid = lidarF.isLastReadValid();
   uint16_t rightDistance = lidarR.readDistance();
+  bool rightValid = lidarR.isLastReadValid();
 
-  bool leftWall = leftDistance < WALL_THRESHOLD;
-  bool frontWall = frontDistance < WALL_THRESHOLD;
-  bool rightWall = rightDistance < WALL_THRESHOLD;
+  // Out-of-range readings are invalid. Do not reuse a stale close distance as
+  // a wall: an invalid reading means no wall was detected.
+  bool leftWall = leftValid && leftDistance < WALL_THRESHOLD;
+  bool frontWall = frontValid && frontDistance < WALL_THRESHOLD;
+  bool rightWall = rightValid && rightDistance < WALL_THRESHOLD;
 
   /*
     * Convert the robot-relative measurements
