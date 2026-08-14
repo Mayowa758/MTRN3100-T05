@@ -67,10 +67,21 @@ void setup() {
     mpu.calcOffsets(true, true);
     robot.initialiseHeading();
 
-    // lidar init
-    lidarF.init();
+    // Shut every VL6180X down before assigning unique I2C addresses. Without
+    // this, more than one sensor can respond at the default address and create
+    // false wall readings.
+    pinMode(A0, OUTPUT);
+    pinMode(A1, OUTPUT);
+    pinMode(A2, OUTPUT);
+    digitalWrite(A0, LOW);
+    digitalWrite(A1, LOW);
+    digitalWrite(A2, LOW);
+    delay(20);
+
+    // Bring up one sensor at a time so each receives its own I2C address.
     lidarL.init();
     lidarR.init();
+    lidarF.init();
 
     maze.mapCurrentCell();
 }
