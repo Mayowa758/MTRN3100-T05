@@ -91,6 +91,144 @@ def validate_corners(corners: Sequence[Sequence[float]]) -> np.ndarray:
     return points
 
 
+def _fit_course_boundary_line(
+    edge_pixels: np.ndarray,
+    start: np.ndarray,
+    end: np.ndarray,
+    config: dict,
+) -> np.ndarray | None:
+    """Fit the reliable wall edge nearest a manually selected course side."""
+    segment = end - start
+    length = float(np.linalg.norm(segment))
+    if length <= 0:
+        return None
+    direction = segment / length
+    inward_normal = np.asarray((-direction[1], direction[0]), dtype=np.float64)
+    relative = edge_pixels - start
+    along = relative @ direction
+    distance = relative @ inward_normal
+    band = max(8.0, length * float(config.get("corner_snap_band_fraction", 0.06)))
+    in_band = (
+        (along >= length * 0.08)
+        & (along <= length * 0.92)
+        & (np.abs(distance) <= band)
+    )
+    candidates = edge_pixels[in_band]
+    candidate_distances = distance[in_band]
+    if len(candidates) == 0:
+        return None
+
+    radius = int(math.ceil(band))
+    bin_edges = np.arange(-radius - 0.5, radius + 1.5, 1.0)
+    counts, _ = np.histogram(candidate_distances, bins=bin_edges)
+    smoothed = np.convolve(counts, np.ones(3, dtype=np.int32), mode="same")
+    strongest = int(smoothed.max(initial=0))
+    minimum_support = max(
+        20,
+        int(round(length * float(config.get("corner_snap_min_support_fraction", 0.12)))),
+    )
+    if strongest < minimum_support:
+        return None
+
+    peak_ratio = float(config.get("corner_snap_peak_ratio", 0.55))
+    possible = np.flatnonzero(smoothed >= strongest * peak_ratio)
+    if len(possible) == 0:
+        return None
+    bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2.0
+    # A thick wall produces two strong edges. Follow the edge the operator
+    # actually clicked instead of always jumping to the outer edge.
+    peak_index = min(possible, key=lambda index: abs(bin_centres[index]))
+    peak_offset = float(bin_centres[peak_index])
+    support = candidates[np.abs(candidate_distances - peak_offset) <= 2.0]
+    if len(support) < minimum_support:
+        return None
+
+    vx, vy, x0, y0 = cv2.fitLine(
+        support.astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01
+    ).flatten()
+    fitted_direction = np.asarray((float(vx), float(vy)), dtype=np.float64)
+    if float(fitted_direction @ direction) < 0:
+        fitted_direction *= -1.0
+    cosine = float(np.clip(fitted_direction @ direction, -1.0, 1.0))
+    angle = math.degrees(math.acos(cosine))
+    if angle > float(config.get("corner_snap_max_angle_deg", 6.0)):
+        return None
+
+    normal = np.asarray((-fitted_direction[1], fitted_direction[0]), dtype=np.float64)
+    constant = -float(normal @ np.asarray((x0, y0), dtype=np.float64))
+    return np.asarray((normal[0], normal[1], constant), dtype=np.float64)
+
+
+def _intersect_lines(first: np.ndarray, second: np.ndarray) -> np.ndarray | None:
+    coefficients = np.asarray(
+        ((first[0], first[1]), (second[0], second[1])), dtype=np.float64
+    )
+    determinant = float(np.linalg.det(coefficients))
+    if abs(determinant) < 0.05:
+        return None
+    return np.linalg.solve(coefficients, -np.asarray((first[2], second[2])))
+
+
+def refine_course_corners(
+    image: np.ndarray,
+    corners: Sequence[Sequence[float]],
+    config: dict,
+) -> np.ndarray:
+    """Snap approximate course corners to fitted outer wall-edge intersections."""
+    selected = validate_corners(corners).astype(np.float64)
+    if not bool(config.get("corner_snap_enabled", True)):
+        return selected.astype(np.float32)
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    rows, columns = np.nonzero(edges)
+    if len(rows) == 0:
+        return selected.astype(np.float32)
+    edge_pixels = np.column_stack((columns, rows)).astype(np.float64)
+    lines: list[np.ndarray] = []
+    for index in range(4):
+        line = _fit_course_boundary_line(
+            edge_pixels,
+            selected[index],
+            selected[(index + 1) % 4],
+            config,
+        )
+        if line is None:
+            return selected.astype(np.float32)
+        lines.append(line)
+
+    intersections: list[np.ndarray] = []
+    for index in range(4):
+        point = _intersect_lines(lines[(index - 1) % 4], lines[index])
+        if point is None:
+            return selected.astype(np.float32)
+        intersections.append(point)
+    refined = np.asarray(intersections, dtype=np.float64)
+
+    average_length = float(
+        np.mean(
+            [
+                np.linalg.norm(selected[(index + 1) % 4] - selected[index])
+                for index in range(4)
+            ]
+        )
+    )
+    maximum_adjustment = average_length * float(
+        config.get("corner_snap_max_adjustment_fraction", 0.03)
+    )
+    if np.any(np.linalg.norm(refined - selected, axis=1) > maximum_adjustment):
+        return selected.astype(np.float32)
+    selected_area = abs(float(cv2.contourArea(selected.astype(np.float32))))
+    refined_area = abs(float(cv2.contourArea(refined.astype(np.float32))))
+    if selected_area <= 0 or not (0.8 <= refined_area / selected_area <= 1.2):
+        return selected.astype(np.float32)
+    try:
+        return validate_corners(refined)
+    except ValueError:
+        return selected.astype(np.float32)
+
+
 def rectify_course(
     image: np.ndarray,
     corners: Sequence[Sequence[float]],
@@ -128,6 +266,84 @@ def make_dark_mask(image: np.ndarray, config: dict) -> np.ndarray:
     dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_OPEN, kernel_open)
     dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, kernel_close)
     return dark_mask
+
+
+def _disk_dark_fraction(
+    dark_mask: np.ndarray,
+    center_x: float,
+    center_y: float,
+    radius: float,
+) -> float:
+    """Return the dark-pixel fraction inside a circular candidate."""
+    sample_radius = max(2, int(round(radius * 0.72)))
+    sample = np.zeros_like(dark_mask)
+    cv2.circle(
+        sample,
+        (int(round(center_x)), int(round(center_y))),
+        sample_radius,
+        255,
+        -1,
+    )
+    sample_area = cv2.countNonZero(sample)
+    if sample_area == 0:
+        return 0.0
+    return cv2.countNonZero(cv2.bitwise_and(dark_mask, sample)) / sample_area
+
+
+def _detect_hough_obstacles(
+    rectified: np.ndarray,
+    dark_mask: np.ndarray,
+    config: dict,
+    pixels_per_mm: float,
+) -> list[Obstacle]:
+    """Recover round cylinders merged with another cylinder or a nearby wall."""
+    min_diameter = float(config["min_obstacle_diameter_mm"])
+    max_diameter = float(config["max_obstacle_diameter_mm"])
+    expected_radius = float(config["expected_obstacle_radius_mm"])
+    border = float(config["border_rejection_mm"]) * pixels_per_mm
+    radius_scale = float(config.get("hough_min_radius_scale", 0.45))
+    distance_scale = float(config.get("hough_min_center_distance_scale", 0.8))
+    circle_threshold = float(config.get("hough_circle_threshold", 30.0))
+    min_dark_fraction = float(config.get("hough_min_dark_fraction", 0.72))
+
+    gray = cv2.cvtColor(rectified, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (9, 9), 2.0)
+    circles = cv2.HoughCircles(
+        gray,
+        cv2.HOUGH_GRADIENT,
+        dp=1.2,
+        minDist=max(8.0, min_diameter * pixels_per_mm * distance_scale),
+        param1=100,
+        param2=circle_threshold,
+        minRadius=max(2, int(round(min_diameter * pixels_per_mm * radius_scale))),
+        maxRadius=max(3, int(round(max_diameter * pixels_per_mm * 0.5))),
+    )
+    if circles is None:
+        return []
+
+    recovered: list[Obstacle] = []
+    for center_x_px, center_y_px, radius_px in circles[0]:
+        if (
+            center_x_px < border
+            or center_y_px < border
+            or center_x_px > rectified.shape[1] - 1 - border
+            or center_y_px > rectified.shape[0] - 1 - border
+        ):
+            continue
+        if _disk_dark_fraction(
+            dark_mask, float(center_x_px), float(center_y_px), float(radius_px)
+        ) < min_dark_fraction:
+            continue
+        measured_radius = float(radius_px) / pixels_per_mm
+        recovered.append(
+            Obstacle(
+                float(center_x_px) / pixels_per_mm,
+                float(center_y_px) / pixels_per_mm,
+                max(expected_radius, min(measured_radius, max_diameter / 2.0)),
+                1.0,
+            )
+        )
+    return recovered
 
 
 def detect_obstacles(rectified: np.ndarray, config: dict) -> tuple[list[Obstacle], np.ndarray]:
@@ -180,6 +396,16 @@ def detect_obstacles(rectified: np.ndarray, config: dict) -> tuple[list[Obstacle
         measured_radius = equivalent_diameter_mm / 2.0
         radius_mm = max(expected_radius, min(measured_radius, max_diameter / 2.0))
         obstacles.append(Obstacle(x_mm, y_mm, radius_mm, circularity))
+
+    duplicate_distance = expected_radius * 0.7
+    for recovered in _detect_hough_obstacles(rectified, dark_mask, config, pixels_per_mm):
+        if any(
+            math.hypot(recovered.x_mm - obstacle.x_mm, recovered.y_mm - obstacle.y_mm)
+            < duplicate_distance
+            for obstacle in obstacles
+        ):
+            continue
+        obstacles.append(recovered)
 
     obstacles.sort(key=lambda obstacle: (obstacle.y_mm, obstacle.x_mm))
     return obstacles, dark_mask
@@ -839,7 +1065,7 @@ def grid_path_to_commands(
     return "".join(commands)
 
 
-def plan_course(
+def _plan_course_with_fixed_corners(
     image: np.ndarray,
     corners: Sequence[Sequence[float]],
     entrance: Sequence[float],
@@ -970,6 +1196,32 @@ def plan_course(
     return PlanResult(
         rectified, dark_mask, occupancy, obstacles, path_mm, motions, "", homography
     )
+
+
+def plan_course(
+    image: np.ndarray,
+    corners: Sequence[Sequence[float]],
+    entrance: Sequence[float],
+    exit_point: Sequence[float],
+    config: dict,
+) -> PlanResult:
+    """Plan with snapped corners, then safely retry the original clicks if needed."""
+    selected_corners = validate_corners(corners)
+    refined_corners = refine_course_corners(image, selected_corners, config)
+    if np.allclose(refined_corners, selected_corners, atol=0.1):
+        return _plan_course_with_fixed_corners(
+            image, selected_corners, entrance, exit_point, config
+        )
+    try:
+        return _plan_course_with_fixed_corners(
+            image, refined_corners, entrance, exit_point, config
+        )
+    except ValueError:
+        # The raw selection must pass every normal collision and clearance check;
+        # this fallback never weakens the physical safety constraints.
+        return _plan_course_with_fixed_corners(
+            image, selected_corners, entrance, exit_point, config
+        )
 
 
 def render_plan(result: PlanResult, config: dict) -> np.ndarray:
