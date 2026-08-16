@@ -3,6 +3,6 @@
  */
 #pragma once
 
-const char PRE_COMMANDS[] = "rfffr";
-const char COURSE_COMMANDS[] = "fffrffff";
-const char POST_COMMANDS[] = "lfrflflfrfrflflfrflflff";
+const char PRE_COMMANDS[] = "";
+const char COURSE_COMMANDS[] = "frfflfflfrffrff";
+const char POST_COMMANDS[] = "";
