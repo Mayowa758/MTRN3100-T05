@@ -34,6 +34,9 @@ const int IMU_CCW_SIGN = 1;
 const int MAX_DRIVE_PWM = 85;
 const int MEDIUM_DRIVE_PWM = 60;
 const int SLOW_DRIVE_PWM = 38;
+const int COURSE_BOOST_PWM = 200;
+const float COURSE_BOOST_START_MM = 20.0f;
+const float COURSE_BOOST_END_MM = 35.0f;
 const int MAX_TURN_PWM = 70;
 const int MEDIUM_TURN_PWM = 48;
 const int SLOW_TURN_PWM = 32;
@@ -70,8 +73,8 @@ void stopMotors() {
 }
 
 void setWheelPWM(int leftPWM, int rightPWM) {
-    leftMotor.setPWM(LEFT_MOTOR_SIGN * constrain(leftPWM, -120, 120));
-    rightMotor.setPWM(RIGHT_MOTOR_SIGN * constrain(rightPWM, -120, 120));
+    leftMotor.setPWM(LEFT_MOTOR_SIGN * constrain(leftPWM, -255, 255));
+    rightMotor.setPWM(RIGHT_MOTOR_SIGN * constrain(rightPWM, -255, 255));
 }
 
 void setTurnPWM(int ccwPWM) {
@@ -108,7 +111,7 @@ float countDifferenceToMm(long countDifference, int encoderSign) {
     return radians * WHEEL_RADIUS_MM;
 }
 
-bool driveDistance(float requestedMm) {
+bool driveDistance(float requestedMm, bool courseMode) {
     float targetMm = requestedMm * DISTANCE_SCALE;
     long leftStart = encoders.leftCount();
     long rightStart = encoders.rightCount();
@@ -127,9 +130,15 @@ bool driveDistance(float requestedMm) {
             if (millis() - settledSince >= SETTLE_MS) return true;
         } else {
             settledSince = 0;
-            int magnitude = fabs(distanceError) > 120.0f ? MAX_DRIVE_PWM
-                          : fabs(distanceError) > 45.0f ? MEDIUM_DRIVE_PWM
-                                                       : SLOW_DRIVE_PWM;
+            bool inCourseBoostSection =
+                courseMode &&
+                travelledMm >= COURSE_BOOST_START_MM &&
+                distanceError >= COURSE_BOOST_END_MM;
+            int magnitude = inCourseBoostSection
+                ? COURSE_BOOST_PWM
+                : fabs(distanceError) > 120.0f ? MAX_DRIVE_PWM
+                : fabs(distanceError) > 45.0f ? MEDIUM_DRIVE_PWM
+                                             : SLOW_DRIVE_PWM;
             int direction = distanceError >= 0.0f ? 1 : -1;
             int correction = constrain(
                 static_cast<int>(HEADING_KP * headingError),
@@ -144,10 +153,10 @@ bool driveDistance(float requestedMm) {
     return false;
 }
 
-bool runStandardCommands(const char* commands) {
+bool runStandardCommands(const char* commands, bool courseMode) {
     for (unsigned int index = 0; commands[index] != '\0'; ++index) {
         bool success = false;
-        if (commands[index] == 'f') success = driveDistance(MAZE_CELL_SIZE_MM);
+        if (commands[index] == 'f') success = driveDistance(MAZE_CELL_SIZE_MM, courseMode);
         else if (commands[index] == 'l') success = turnRelative(90.0f);
         else if (commands[index] == 'r') success = turnRelative(-90.0f);
         if (!success) return false;
@@ -168,9 +177,9 @@ void setup() {
     targetHeadingDeg = currentHeading();
     delay(2000);
 
-    bool success = runStandardCommands(PRE_COMMANDS);
-    if (success) success = runStandardCommands(COURSE_COMMANDS);
-    if (success) success = runStandardCommands(POST_COMMANDS);
+    bool success = runStandardCommands(PRE_COMMANDS, false);
+    if (success) success = runStandardCommands(COURSE_COMMANDS, true);
+    if (success) success = runStandardCommands(POST_COMMANDS, false);
     stopMotors();
 }
 
