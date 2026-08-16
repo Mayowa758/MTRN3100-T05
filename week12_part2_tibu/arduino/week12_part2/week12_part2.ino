@@ -40,6 +40,9 @@ const int GRID_FORWARD_PWM = 220;
 const int COURSE_MAX_PWM = 100;
 const int COURSE_MEDIUM_PWM = 70;
 const int COURSE_SLOW_PWM = 45;
+const int COURSE_BOOST_PWM = 200;
+const float COURSE_BOOST_START_MM = 20.0f;
+const float COURSE_BOOST_END_MM = 35.0f;
 const int MAX_TURN_PWM = 150;
 const int MEDIUM_TURN_PWM = 80;
 const int SLOW_TURN_PWM = 50;
@@ -276,9 +279,14 @@ bool driveDistance(float requestedMm, bool gridMode) {
         if (gridMode) {
             magnitude = GRID_FORWARD_PWM;
         } else {
-            magnitude = distanceError > 120.0f ? COURSE_MAX_PWM
-                      : distanceError > 45.0f ? COURSE_MEDIUM_PWM
-                                              : COURSE_SLOW_PWM;
+            bool inCourseBoostSection =
+                travelledMm >= COURSE_BOOST_START_MM &&
+                distanceError >= COURSE_BOOST_END_MM;
+            magnitude = inCourseBoostSection
+                ? COURSE_BOOST_PWM
+                : distanceError > 120.0f ? COURSE_MAX_PWM
+                : distanceError > 45.0f ? COURSE_MEDIUM_PWM
+                                        : COURSE_SLOW_PWM;
         }
         int imuCorrection = constrain(
             static_cast<int>(HEADING_KP * headingError),
