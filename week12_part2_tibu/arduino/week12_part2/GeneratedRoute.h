@@ -10,13 +10,15 @@ struct CourseMotion {
 
 const char PRE_COMMANDS[] = "";
 const char POST_COMMANDS[] = "";
+
 const CourseMotion COURSE_MOTIONS[] = {
     {0.00f, 165.00f},
-    {-45.00f, 28.28f},
-    {45.00f, 105.00f},
-    {45.00f, 431.34f},
-    {-45.00f, 310.00f},
-    {45.00f, 106.07f},
+    {-45.00f, 21.21f},
+    {45.00f, 120.00f},
+    {45.00f, 417.19f},
+    {-45.00f, 305.00f},
+    {45.00f, 113.14f},
     {-45.00f, 100.00f}
 };
+
 const unsigned int COURSE_MOTION_COUNT = 7;
