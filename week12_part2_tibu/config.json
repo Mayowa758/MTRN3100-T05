@@ -40,5 +40,11 @@
   "hough_min_radius_scale": 0.45,
   "hough_min_center_distance_scale": 0.8,
   "hough_min_dark_fraction": 0.72,
-  "border_rejection_mm": 20.0
+  "border_rejection_mm": 20.0,
+  "wall_route_retry_thresholds": [
+    0.25,
+    0.28,
+    0.31,
+    0.34
+  ]
 }

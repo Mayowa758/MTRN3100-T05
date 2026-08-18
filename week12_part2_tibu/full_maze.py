@@ -179,16 +179,25 @@ def _dark_fraction(mask: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> floa
 
 
 def detect_standard_walls(
-    rectified: np.ndarray, config: dict
+    rectified: np.ndarray, config: dict, wall_fraction_threshold: float | None = None
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return horizontal[8,9] and vertical[9,8] internal maze walls."""
+    """Return horizontal[8,9] and vertical[9,8] internal maze walls.
+
+    ``wall_fraction_threshold`` can be raised during route recovery.  A higher
+    value requires stronger dark-pixel evidence before an edge is classified
+    as a wall, which is useful when a shadow/grid clip creates a false wall.
+    """
     count = int(config.get("full_maze_cell_count", 9))
     size_mm = float(config.get("full_maze_size_mm", 1620.0))
     pixels_per_mm = (rectified.shape[0] - 1) / size_mm
     cell_px = float(config["maze_cell_size_mm"]) * pixels_per_mm
     half_band = max(2, int(round(float(config.get("wall_sample_half_width_mm", 12.0)) * pixels_per_mm)))
     end_trim = int(round(float(config.get("wall_sample_end_trim_mm", 28.0)) * pixels_per_mm))
-    threshold = float(config.get("wall_dark_fraction_threshold", 0.25))
+    threshold = (
+        float(wall_fraction_threshold)
+        if wall_fraction_threshold is not None
+        else float(config.get("wall_dark_fraction_threshold", 0.25))
+    )
     wall_gray_threshold = int(config.get("wall_gray_threshold", 145))
     gray = cv2.cvtColor(rectified, cv2.COLOR_BGR2GRAY)
     dark_mask = np.where(gray <= wall_gray_threshold, 255, 0).astype(np.uint8)
@@ -420,37 +429,77 @@ def plan_full_maze(
     config: dict,
 ) -> FullMazeResult:
     rectified, homography = rectify_full_maze(image, full_corners, config)
-    horizontal, vertical, dark_mask = detect_standard_walls(rectified, config)
     placement = map_course_placement(
         homography, course_corners, course_entrance, course_exit, config
     )
-    pre_route = plan_standard_route(
-        horizontal,
-        vertical,
-        (maze_start[0], maze_start[1]),
-        placement.entrance_cell,
-        maze_start[2],
-        blocked_cells=placement.cells,
-        goal_direction=placement.entrance_direction,
+
+    # First use the normal detector.  If one weak false-positive wall makes a
+    # perfectly valid maze section appear disconnected, retry with gradually
+    # stronger evidence required to call an edge a wall.  Raising the dark
+    # fraction threshold opens only ambiguous detections; solid dark walls
+    # still remain blocked.
+    base_threshold = float(config.get("wall_dark_fraction_threshold", 0.25))
+    retry_thresholds = config.get(
+        "wall_route_retry_thresholds",
+        [base_threshold, 0.28, 0.31, 0.34],
     )
-    post_route = plan_standard_route(
-        horizontal,
-        vertical,
-        placement.exit_cell,
-        maze_goal,
-        placement.exit_direction,
-        blocked_cells=placement.cells,
-    )
-    return FullMazeResult(
-        rectified,
-        dark_mask,
-        horizontal,
-        vertical,
-        homography,
-        placement,
-        pre_route,
-        post_route,
-    )
+    thresholds: list[float] = []
+    for value in retry_thresholds:
+        value = float(value)
+        if value < base_threshold:
+            value = base_threshold
+        if value not in thresholds:
+            thresholds.append(value)
+    if base_threshold not in thresholds:
+        thresholds.insert(0, base_threshold)
+
+    last_error: ValueError | None = None
+    for threshold in thresholds:
+        horizontal, vertical, dark_mask = detect_standard_walls(
+            rectified, config, wall_fraction_threshold=threshold
+        )
+        try:
+            pre_route = plan_standard_route(
+                horizontal,
+                vertical,
+                (maze_start[0], maze_start[1]),
+                placement.entrance_cell,
+                maze_start[2],
+                blocked_cells=placement.cells,
+                goal_direction=placement.entrance_direction,
+            )
+            post_route = plan_standard_route(
+                horizontal,
+                vertical,
+                placement.exit_cell,
+                maze_goal,
+                placement.exit_direction,
+                blocked_cells=placement.cells,
+            )
+            if threshold > base_threshold + 1e-9:
+                print(
+                    f"Route recovery: accepted ambiguous openings with wall "
+                    f"threshold {threshold:.2f} (normal {base_threshold:.2f})."
+                )
+            return FullMazeResult(
+                rectified,
+                dark_mask,
+                horizontal,
+                vertical,
+                homography,
+                placement,
+                pre_route,
+                post_route,
+            )
+        except ValueError as error:
+            last_error = error
+
+    if last_error is not None:
+        raise ValueError(
+            "No standard-maze route connects the supplied location and obstacle "
+            "course, even after retrying ambiguous wall detections"
+        ) from last_error
+    raise ValueError("No standard-maze route could be generated")
 
 
 def _global_cell_original_point(
