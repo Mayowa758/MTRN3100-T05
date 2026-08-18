@@ -1,3 +1,4 @@
+// AI-assisted code: ChatGPT was used to help implement and review the Week 12 4.3 mapping/BFS logic.
 #pragma once
 
 #include <Arduino.h>
@@ -899,27 +900,189 @@ public:
 
 
     // ============================================================
-    // RETURN TO START USING THE DFS STACK
+    // BFS PATH PLANNING ON THE DISCOVERED MAP
     // ============================================================
 
-    bool returnToStart(
+    /*
+     * BFS is intentionally conservative:
+     *
+     * - known wall       -> blocked
+     * - unknown edge     -> blocked
+     * - known open edge  -> traversable
+     *
+     * During DFS exploration an invalid / out-of-range LiDAR reading is
+     * stored by mapCurrentCell() as a KNOWN OPEN edge.  That is different
+     * from an edge which has never been observed at all.
+     */
+    bool findPathBFS(
+        uint8_t fromRow,
+        uint8_t fromCol,
+        uint8_t toRow,
+        uint8_t toCol
+    ) {
+
+        if (!validCell(fromRow, fromCol) || !validCell(toRow, toCol)) {
+            return false;
+        }
+
+        uint8_t previous[SIZE * SIZE];
+
+        for (uint8_t i = 0; i < SIZE * SIZE; i++) {
+            previous[i] = 255;
+        }
+
+        // Reuse path[] as the BFS queue to save SRAM.
+        uint8_t front = 0;
+        uint8_t back = 0;
+
+        path[back].row = fromRow;
+        path[back].col = fromCol;
+        back++;
+
+        const uint8_t startIndex = fromRow * SIZE + fromCol;
+        previous[startIndex] = startIndex;
+
+        const Direction directions[4] = {
+            NORTH,
+            EAST,
+            SOUTH,
+            WEST
+        };
+
+        while (front < back) {
+
+            const uint8_t row = path[front].row;
+            const uint8_t col = path[front].col;
+            front++;
+
+            if (row == toRow && col == toCol) {
+                break;
+            }
+
+            for (uint8_t i = 0; i < 4; i++) {
+
+                const Direction direction = directions[i];
+
+                // Unknown edges are treated as walls by BFS.
+                if (!isWallKnown(row, col, direction)) {
+                    continue;
+                }
+
+                // Known physical walls are also blocked.
+                if (hasWall(row, col, direction)) {
+                    continue;
+                }
+
+                int nextRow = row;
+                int nextCol = col;
+
+                if (direction == NORTH) nextRow--;
+                else if (direction == EAST) nextCol++;
+                else if (direction == SOUTH) nextRow++;
+                else nextCol--;
+
+                if (!validCell(nextRow, nextCol)) {
+                    continue;
+                }
+
+                const uint8_t nextIndex = nextRow * SIZE + nextCol;
+
+                if (previous[nextIndex] != 255) {
+                    continue;
+                }
+
+                previous[nextIndex] = row * SIZE + col;
+
+                if (back >= SIZE * SIZE) {
+                    return false;
+                }
+
+                path[back].row = (uint8_t)nextRow;
+                path[back].col = (uint8_t)nextCol;
+                back++;
+            }
+        }
+
+        const uint8_t goalIndex = toRow * SIZE + toCol;
+
+        if (previous[goalIndex] == 255) {
+            pathLength = 0;
+            return false;
+        }
+
+        // Reconstruct target -> start into path[].
+        pathLength = 0;
+        uint8_t row = toRow;
+        uint8_t col = toCol;
+
+        while (!(row == fromRow && col == fromCol)) {
+
+            if (pathLength >= SIZE * SIZE) {
+                pathLength = 0;
+                return false;
+            }
+
+            path[pathLength].row = row;
+            path[pathLength].col = col;
+            pathLength++;
+
+            const uint8_t currentIndex = row * SIZE + col;
+            const uint8_t previousIndex = previous[currentIndex];
+
+            if (previousIndex == 255) {
+                pathLength = 0;
+                return false;
+            }
+
+            row = previousIndex / SIZE;
+            col = previousIndex % SIZE;
+        }
+
+        path[pathLength].row = fromRow;
+        path[pathLength].col = fromCol;
+        pathLength++;
+
+        // Reverse so path[0] is the physical robot's current position.
+        for (uint8_t i = 0; i < pathLength / 2; i++) {
+            Position temp = path[i];
+            path[i] = path[pathLength - 1 - i];
+            path[pathLength - 1 - i] = temp;
+        }
+
+        return true;
+    }
+
+
+    // ============================================================
+    // DRIVE CURRENT BFS PATH
+    // ============================================================
+
+    bool driveCurrentPath(
         Robot& robot,
         U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display
     ) {
 
-        // path[0] is the start cell and path[pathLength - 1] is the current
-        // cell. Follow the recorded DFS route backwards one full cell at a time.
-        while (pathLength > 1) {
+        if (pathLength == 0) {
+            return false;
+        }
 
-            Position previous = path[pathLength - 2];
-            Direction returnDirection;
+        // A one-cell path means we are already at the target.
+        if (pathLength == 1) {
+            return true;
+        }
 
-            if (previous.row < robotRow) returnDirection = NORTH;
-            else if (previous.row > robotRow) returnDirection = SOUTH;
-            else if (previous.col < robotCol) returnDirection = WEST;
-            else returnDirection = EAST;
+        for (uint8_t i = 1; i < pathLength; i++) {
 
-            if (!faceDirection(robot, returnDirection)) {
+            const Position current = path[i - 1];
+            const Position next = path[i];
+            Direction direction;
+
+            if (next.row < current.row) direction = NORTH;
+            else if (next.row > current.row) direction = SOUTH;
+            else if (next.col > current.col) direction = EAST;
+            else direction = WEST;
+
+            if (!faceDirection(robot, direction)) {
                 robot.stopMotors();
                 return false;
             }
@@ -930,14 +1093,36 @@ public:
                 return false;
             }
 
-            robotRow = previous.row;
-            robotCol = previous.col;
-            robotDirection = returnDirection;
-            pathLength--;
+            robotRow = next.row;
+            robotCol = next.col;
+            robotDirection = direction;
             displayMap(display);
         }
 
-        return atStart();
+        robot.stopMotors();
+        return true;
+    }
+
+
+    // ============================================================
+    // BFS: CURRENT POSITION -> START
+    // ============================================================
+
+    bool returnToStart(
+        Robot& robot,
+        U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display
+    ) {
+
+        if (atStart()) {
+            return true;
+        }
+
+        if (!findPathBFS(robotRow, robotCol, startRow, startCol)) {
+            robot.stopMotors();
+            return false;
+        }
+
+        return driveCurrentPath(robot, display) && atStart();
     }
 
 
@@ -986,48 +1171,27 @@ public:
 
         do {
 
-            display.setFont(
-                u8g2_font_6x10_tf
-            );
+            display.setFont(u8g2_font_6x10_tf);
 
             display.setCursor(70, 20);
-            display.print(
-                getMappingPercentage(),
-                1
-            );
+            display.print(getMappingPercentage(), 1);
             display.print("%");
 
             display.setCursor(70, 30);
             display.print("mapped");
 
-
-            // ----------------------------------------------------
-            // DRAW MAZE
-            // ----------------------------------------------------
-
             for (uint8_t row = 0; row < SIZE; row++) {
 
                 for (uint8_t col = 0; col < SIZE; col++) {
 
-                    // The three cells in each physical corner are outside the
-                    // octagonal maze, so do not draw or visit them.
                     if (!validCell(row, col)) {
                         continue;
                     }
 
-                    uint8_t x =
-                        1 + col * CELL_WIDTH;
-
-                    uint8_t y =
-                        5 + row * CELL_HEIGHT;
-
-
-                    // ------------------------------------------------
-                    // UNVISITED CELL
-                    // ------------------------------------------------
+                    uint8_t x = 1 + col * CELL_WIDTH;
+                    uint8_t y = 5 + row * CELL_HEIGHT;
 
                     if (!isVisited(row, col)) {
-
                         display.drawBox(
                             x + 1,
                             y + 1,
@@ -1035,34 +1199,11 @@ public:
                             CELL_HEIGHT - 1
                         );
                     }
-
-
-                    // ------------------------------------------------
-                    // VISITED CELL
-                    // ------------------------------------------------
-
                     else {
-
-                        if (hasWall(
-                                row,
-                                col,
-                                NORTH
-                            )) {
-
-                            display.drawLine(
-                                x,
-                                y,
-                                x + CELL_WIDTH,
-                                y
-                            );
+                        if (hasWall(row, col, NORTH)) {
+                            display.drawLine(x, y, x + CELL_WIDTH, y);
                         }
-
-                        if (hasWall(
-                                row,
-                                col,
-                                EAST
-                            )) {
-
+                        if (hasWall(row, col, EAST)) {
                             display.drawLine(
                                 x + CELL_WIDTH,
                                 y,
@@ -1070,13 +1211,7 @@ public:
                                 y + CELL_HEIGHT
                             );
                         }
-
-                        if (hasWall(
-                                row,
-                                col,
-                                SOUTH
-                            )) {
-
+                        if (hasWall(row, col, SOUTH)) {
                             display.drawLine(
                                 x,
                                 y + CELL_HEIGHT,
@@ -1084,38 +1219,13 @@ public:
                                 y + CELL_HEIGHT
                             );
                         }
-
-                        if (hasWall(
-                                row,
-                                col,
-                                WEST
-                            )) {
-
-                            display.drawLine(
-                                x,
-                                y,
-                                x,
-                                y + CELL_HEIGHT
-                            );
+                        if (hasWall(row, col, WEST)) {
+                            display.drawLine(x, y, x, y + CELL_HEIGHT);
                         }
                     }
 
-
-                    // ------------------------------------------------
-                    // ROBOT
-                    // ------------------------------------------------
-
-                    if (
-                        row == robotRow &&
-                        col == robotCol
-                    ) {
-
-                        display.drawBox(
-                            x + 2,
-                            y + 2,
-                            3,
-                            3
-                        );
+                    if (row == robotRow && col == robotCol) {
+                        display.drawBox(x + 2, y + 2, 3, 3);
                     }
                 }
             }
@@ -1125,409 +1235,41 @@ public:
 
 
     // ============================================================
-    // BFS SETTINGS
+    // GOAL / POSITION HELPERS
     // ============================================================
 
-    void setGoal(
-        uint8_t row,
-        uint8_t col
-    ) {
-
+    void setGoal(uint8_t row, uint8_t col) {
         goalRow = row;
         goalCol = col;
     }
 
-
     bool atStart() const {
-
-        return (
-            robotRow == startRow &&
-            robotCol == startCol
-        );
+        return robotRow == startRow && robotCol == startCol;
     }
 
-
     bool atGoal() const {
-
-        return (
-            robotRow == goalRow &&
-            robotCol == goalCol
-        );
+        return robotRow == goalRow && robotCol == goalCol;
     }
 
 
     // ============================================================
-    // BFS SHORTEST PATH
+    // BFS: START -> GOAL SHORTEST PATH
     // ============================================================
 
     bool findShortestPath() {
-
-        /*
-         * 255 means "no predecessor".
-         *
-         * There are only 81 cells, so uint8_t
-         * is enough to store a cell index.
-         */
-
-        uint8_t previous[SIZE * SIZE];
-
-        for (
-            uint8_t i = 0;
-            i < SIZE * SIZE;
-            i++
-        ) {
-
-            previous[i] = 255;
-        }
-
-
-        /*
-         * Reuse path[] as the BFS queue.
-         *
-         * This avoids allocating:
-         *
-         * queueRow[81]
-         * queueCol[81]
-         *
-         * and saves about 162 bytes of stack.
-         */
-
-        uint8_t front = 0;
-        uint8_t back = 0;
-
-
-        path[back].row = startRow;
-        path[back].col = startCol;
-
-        back++;
-
-
-        uint8_t startIndex =
-            startRow * SIZE + startCol;
-
-        previous[startIndex] =
-            startIndex;
-
-
-        // --------------------------------------------------------
-        // BFS
-        // --------------------------------------------------------
-
-        while (front < back) {
-
-            uint8_t row =
-                path[front].row;
-
-            uint8_t col =
-                path[front].col;
-
-            front++;
-
-
-            if (
-                row == goalRow &&
-                col == goalCol
-            ) {
-
-                break;
-            }
-
-
-            const Direction directions[4] = {
-                NORTH,
-                EAST,
-                SOUTH,
-                WEST
-            };
-
-
-            for (
-                uint8_t i = 0;
-                i < 4;
-                i++
-            ) {
-
-                Direction direction =
-                    directions[i];
-
-
-                if (hasWall(
-                        row,
-                        col,
-                        direction
-                    )) {
-
-                    continue;
-                }
-
-
-                /*
-                 * Keep these as int because
-                 * NORTH from row 0 gives -1.
-                 */
-
-                int nextRow = row;
-                int nextCol = col;
-
-
-                if (direction == NORTH) {
-
-                    nextRow--;
-                }
-
-                else if (direction == EAST) {
-
-                    nextCol++;
-                }
-
-                else if (direction == SOUTH) {
-
-                    nextRow++;
-                }
-
-                else {
-
-                    nextCol--;
-                }
-
-
-                if (!validCell(
-                        nextRow,
-                        nextCol
-                    )) {
-
-                    continue;
-                }
-
-
-                uint8_t nextIndex =
-                    nextRow * SIZE + nextCol;
-
-
-                /*
-                 * Already visited by BFS.
-                 */
-
-                if (
-                    previous[nextIndex] != 255
-                ) {
-
-                    continue;
-                }
-
-
-                /*
-                 * Store predecessor.
-                 */
-
-                previous[nextIndex] =
-                    row * SIZE + col;
-
-
-                /*
-                 * Add cell to BFS queue.
-                 */
-
-                path[back].row =
-                    nextRow;
-
-                path[back].col =
-                    nextCol;
-
-                back++;
-            }
-        }
-
-
-        // --------------------------------------------------------
-        // CHECK WHETHER GOAL WAS FOUND
-        // --------------------------------------------------------
-
-        uint8_t goalIndex =
-            goalRow * SIZE + goalCol;
-
-
-        if (
-            previous[goalIndex] == 255
-        ) {
-
-            return false;
-        }
-
-
-        // --------------------------------------------------------
-        // RECONSTRUCT PATH
-        // --------------------------------------------------------
-
-        pathLength = 0;
-
-        int row = goalRow;
-        int col = goalCol;
-
-
-        while (
-            !(row == startRow &&
-              col == startCol)
-        ) {
-
-            if (
-                pathLength >=
-                SIZE * SIZE
-            ) {
-
-                return false;
-            }
-
-
-            path[pathLength].row =
-                row;
-
-            path[pathLength].col =
-                col;
-
-            pathLength++;
-
-
-            uint8_t currentIndex =
-                row * SIZE + col;
-
-
-            uint8_t previousIndex =
-                previous[currentIndex];
-
-
-            row =
-                previousIndex / SIZE;
-
-            col =
-                previousIndex % SIZE;
-        }
-
-
-        /*
-         * Add start cell.
-         */
-
-        path[pathLength].row =
-            startRow;
-
-        path[pathLength].col =
-            startCol;
-
-        pathLength++;
-
-
-        // --------------------------------------------------------
-        // REVERSE PATH
-        // --------------------------------------------------------
-
-        for (
-            uint8_t i = 0;
-            i < pathLength / 2;
-            i++
-        ) {
-
-            Position temp =
-                path[i];
-
-
-            path[i] =
-                path[pathLength - 1 - i];
-
-
-            path[pathLength - 1 - i] =
-                temp;
-        }
-
-
-        return true;
+        return findPathBFS(startRow, startCol, goalRow, goalCol);
     }
 
 
     // ============================================================
-    // DRIVE SHORTEST PATH
+    // DRIVE START -> GOAL BFS PATH
     // ============================================================
 
     bool driveShortestPath(
         Robot& robot,
         U8G2_SSD1306_128X64_NONAME_1_HW_I2C& display
     ) {
-
-        if (pathLength < 2) {
-            return false;
-        }
-
-
-        for (
-            uint8_t i = 1;
-            i < pathLength;
-            i++
-        ) {
-
-            Position current =
-                path[i - 1];
-
-            Position next =
-                path[i];
-
-
-            Direction direction;
-
-
-            if (next.row < current.row) {
-
-                direction = NORTH;
-            }
-
-            else if (next.row > current.row) {
-
-                direction = SOUTH;
-            }
-
-            else if (next.col > current.col) {
-
-                direction = EAST;
-            }
-
-            else {
-
-                direction = WEST;
-            }
-
-
-            if (!faceDirection(
-                    robot,
-                    direction
-                )) {
-
-                robot.stopMotors();
-                return false;
-            }
-
-
-            if (!robot.driveForwardOneCell()) {
-
-                robot.stopMotors();
-                return false;
-            }
-
-            // The planned-path state is updated only after a full cell move.
-            if (!robot.didLastForwardCompleteCell()) {
-                robot.stopMotors();
-                return false;
-            }
-
-
-            robotRow = next.row;
-            robotCol = next.col;
-            robotDirection = direction;
-            displayMap(display);
-        }
-
-
-        robot.stopMotors();
-
-        return true;
+        return driveCurrentPath(robot, display) && atGoal();
     }
 
 

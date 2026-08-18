@@ -8,37 +8,50 @@
 constexpr float CELL_DISTANCE_M = 0.180;
 constexpr float WHEEL_RADIUS_M = 0.016;
 
-constexpr int FORWARD_PWM = 100;
+constexpr int FORWARD_PWM = 120;
 constexpr int MAX_FORWARD_CORRECTION = 60;
 constexpr float HEADING_KP = 4.0;
 
-constexpr int MAX_TURN_PWM = 70;
-constexpr int MEDIUM_TURN_PWM = 48;
-constexpr int SLOW_TURN_PWM = 30;
+constexpr int MAX_TURN_PWM = 80;
+constexpr int MEDIUM_TURN_PWM = 55;
+constexpr int SLOW_TURN_PWM = 35;
 
 constexpr float TURN_TOLERANCE = 1.0;
 constexpr float DISTANCE_TOLERANCE = 0.15;
 
-constexpr unsigned long DRIVE_TIMEOUT = 2000;
+constexpr unsigned long DRIVE_TIMEOUT = 4500;
+constexpr unsigned long DRIVE_STALL_TIMEOUT = 900;
+constexpr float DRIVE_PROGRESS_EPSILON_RAD = 0.08;
 constexpr unsigned long TURN_TIMEOUT = 2000;
 constexpr unsigned long SETTLE_TIME = 0;
 
 constexpr int SIDE_CENTRE_MIN_MM = 35;
-constexpr int SIDE_CENTRE_MAX_MM = 110;
-constexpr int SIDE_CENTRE_DEADBAND_MM = 5;
-constexpr int SIDE_CENTRE_CORRECTION = 7;
-constexpr unsigned long SIDE_CENTRE_PULSE_MS = 30;
+constexpr int SIDE_CENTRE_MAX_MM = 120;
+constexpr int SIDE_CENTRE_DEADBAND_MM = 8;
+constexpr int SIDE_CENTRE_CORRECTION = 12;
 
-constexpr int SIDE_EMERGENCY_MM = 55;
-constexpr int SIDE_EMERGENCY_CORRECTION = 10;
-constexpr int SIDE_EMERGENCY_CONFIRMATIONS = 2;
-
-constexpr unsigned long SIDE_NUDGE_DURATION_MS = 50;
-// After any lidar pulse, release steering to the IMU long enough for it to
-// return the robot to targetHeading before another lidar correction is allowed.
-constexpr unsigned long SIDE_NUDGE_COOLDOWN_MS = 180;
+// Proactive side-wall protection.  The old implementation waited until 55 mm,
+// pulsed only +/-10 PWM for 50 ms, then entered a cooldown.  At driving speed
+// that correction arrived too late.  Start steering away much earlier and keep
+// correcting until the robot has recovered a safe clearance.
+constexpr int SIDE_WARNING_MM = 75;
+constexpr int SIDE_DANGER_MM = 35;
+constexpr int SIDE_RELEASE_MM = 85;
+constexpr int SIDE_ESCAPE_MIN_CORRECTION = 14;
+constexpr int SIDE_ESCAPE_MAX_CORRECTION = 35;
 
 constexpr int FRONT_WALL_END_MM = 50;
+
+// After every 90-degree turn, use the front wall as a local position reference
+// when one is visible. This corrects accumulated forward/backward position error
+// before the next maze movement.
+constexpr int FRONT_CENTRE_TARGET_MM = 50;
+constexpr int FRONT_CENTRE_TOLERANCE_MM = 5;
+constexpr int FRONT_CENTRE_PWM = 45;
+constexpr int FRONT_CENTRE_MAX_DETECT_MM = 160;
+constexpr unsigned long FRONT_CENTRE_TIMEOUT_MS = 1500;
+constexpr unsigned long FRONT_CENTRE_SETTLE_MS = 60;
+
 constexpr unsigned long LIDAR_UPDATE_MS = 45;
 
 class Robot {
@@ -71,23 +84,15 @@ public:
         unsigned long startTime = millis();
         unsigned long settledSince = 0;
         unsigned long lastLidarUpdate = 0;
+        unsigned long lastProgressTime = millis();
+        float lastProgressTravel = 0.0f;
         int lidarCorrection = 0;
         int frontMM = -1;
 
-        leftCloseCount = 0;
-        rightCloseCount = 0;
         activeSideNudge = 0;
-        sideNudgeEndsAt = 0;
-        sideNudgeCooldownEndsAt = 0;
 
         while (millis() - startTime < DRIVE_TIMEOUT) {
             mpu.update();
-
-            if (activeSideNudge != 0 && (long)(millis() - sideNudgeEndsAt) >= 0) {
-                activeSideNudge = 0;
-                lidarCorrection = 0;
-                sideNudgeCooldownEndsAt = millis() + SIDE_NUDGE_COOLDOWN_MS;
-            }
 
             if (millis() - lastLidarUpdate >= LIDAR_UPDATE_MS) {
                 int leftMM = readLidarMM(leftLidar);
@@ -110,6 +115,20 @@ public:
             float rightTravel = (-encoder.getRightRotation()) - rightStart;
             float averageTravel = (leftTravel + rightTravel) / 2.0;
             float distanceError = targetRotation - averageTravel;
+
+            // A strong side-wall correction can slow forward progress enough that
+            // a fixed short timeout falsely looks like a failed drive. Track
+            // encoder progress separately: only treat the robot as stalled when
+            // neither wheel has advanced meaningfully for DRIVE_STALL_TIMEOUT.
+            if (averageTravel > lastProgressTravel + DRIVE_PROGRESS_EPSILON_RAD) {
+                lastProgressTravel = averageTravel;
+                lastProgressTime = millis();
+            }
+
+            if (millis() - lastProgressTime >= DRIVE_STALL_TIMEOUT) {
+                stopMotors();
+                return false;
+            }
 
             float headingError = wrapAngle(targetHeading - mpu.getAngleZ());
 
@@ -230,11 +249,93 @@ public:
     // }
 
     bool turnLeft90() {
-        return turnToHeading(targetHeading + 90.0);
+        if (!turnToHeading(targetHeading + 90.0)) {
+            return false;
+        }
+
+        centreToFrontWallAfterTurn();
+        return true;
     }
 
     bool turnRight90() {
-        return turnToHeading(targetHeading - 90.0);
+        if (!turnToHeading(targetHeading - 90.0)) {
+            return false;
+        }
+
+        centreToFrontWallAfterTurn();
+        return true;
+    }
+
+    // A 90-degree turn can leave the robot slightly forward/backward of the
+    // cell centre. If the front lidar can see a nearby wall, use that wall as
+    // a local reference and gently correct to 50 mm from it. If no front wall
+    // is visible (invalid/out-of-range reading), do nothing.
+    void centreToFrontWallAfterTurn() {
+        stopMotors();
+        delay(40);
+
+        int frontMM = readLidarMM(frontLidar);
+
+        if (frontMM < 0 || frontMM > FRONT_CENTRE_MAX_DETECT_MM) {
+            return;
+        }
+
+        unsigned long startTime = millis();
+        unsigned long settledSince = 0;
+
+        while (millis() - startTime < FRONT_CENTRE_TIMEOUT_MS) {
+            mpu.update();
+            frontMM = readLidarMM(frontLidar);
+
+            // If the wall disappears from the lidar range while correcting,
+            // stop rather than blindly continuing.
+            if (frontMM < 0 || frontMM > FRONT_CENTRE_MAX_DETECT_MM) {
+                stopMotors();
+                return;
+            }
+
+            int distanceErrorMM = frontMM - FRONT_CENTRE_TARGET_MM;
+
+            if (abs(distanceErrorMM) <= FRONT_CENTRE_TOLERANCE_MM) {
+                stopMotors();
+
+                if (settledSince == 0) {
+                    settledSince = millis();
+                }
+
+                if (millis() - settledSince >= FRONT_CENTRE_SETTLE_MS) {
+                    return;
+                }
+            } else {
+                settledSince = 0;
+
+                float headingError = wrapAngle(targetHeading - mpu.getAngleZ());
+                int headingCorrection = constrain(
+                    (int)(HEADING_KP * headingError),
+                    -12,
+                    12
+                );
+
+                if (distanceErrorMM > 0) {
+                    // Too far from the wall: move forward gently.
+                    setForwardPWM(
+                        FRONT_CENTRE_PWM - headingCorrection,
+                        FRONT_CENTRE_PWM + headingCorrection
+                    );
+                } else {
+                    // Too close to the wall: reverse gently. The heading
+                    // correction sign is inverted while travelling backwards.
+                    setForwardPWM(
+                        -FRONT_CENTRE_PWM - headingCorrection,
+                        -FRONT_CENTRE_PWM + headingCorrection
+                    );
+                }
+            }
+
+            delay(20);
+        }
+
+        stopMotors();
     }
 
     int readLidarMM(mtrn3100::Lidar& lidar) {
@@ -251,68 +352,79 @@ public:
         const bool leftValid = leftMM >= 0;
         const bool rightValid = rightMM >= 0;
 
-        // Keep a correction brief. Continuous side correction can rotate the
-        // robot away from its IMU heading instead of merely nudging it centred.
-        if (activeSideNudge != 0) {
-            return activeSideNudge;
-        }
+        // If both walls are visible, steer from the difference between them.
+        // This avoids using a fixed absolute threshold in a narrow corridor:
+        // when centred, both side readings can legitimately be fairly small.
+        if (leftValid && rightValid) {
+            activeSideNudge = 0;
+            const int sideError = leftMM - rightMM;
 
-        // During this period the caller supplies zero lidar correction, so the
-        // IMU heading controller alone straightens the robot after a pulse.
-        if ((long)(millis() - sideNudgeCooldownEndsAt) < 0) {
+            // If one wall is critically close and clearly closer than the other,
+            // immediately use the full escape correction.
+            if (leftMM <= SIDE_DANGER_MM && leftMM + 8 < rightMM) {
+                return -SIDE_ESCAPE_MAX_CORRECTION;
+            }
+            if (rightMM <= SIDE_DANGER_MM && rightMM + 8 < leftMM) {
+                return SIDE_ESCAPE_MAX_CORRECTION;
+            }
+
+            if (abs(sideError) > SIDE_CENTRE_DEADBAND_MM) {
+                // Continuous proportional centring.  The correction grows with
+                // the side-distance mismatch instead of being a 30 ms pulse.
+                const int magnitude = constrain(
+                    abs(sideError) / 2,
+                    SIDE_CENTRE_CORRECTION,
+                    SIDE_ESCAPE_MAX_CORRECTION
+                );
+                return (sideError > 0) ? magnitude : -magnitude;
+            }
+
             return 0;
         }
 
-        if (
-            leftValid &&
-            rightValid &&
-            leftMM >= SIDE_CENTRE_MIN_MM &&
-            leftMM <= SIDE_CENTRE_MAX_MM &&
-            rightMM >= SIDE_CENTRE_MIN_MM &&
-            rightMM <= SIDE_CENTRE_MAX_MM
-        ) {
-            int sideError = leftMM - rightMM;
-
-            if (abs(sideError) > SIDE_CENTRE_DEADBAND_MM) {
-                activeSideNudge = constrain(
-                    sideError / 6,
-                    -SIDE_CENTRE_CORRECTION,
-                    SIDE_CENTRE_CORRECTION
-                );
-                sideNudgeEndsAt = millis() + SIDE_CENTRE_PULSE_MS;
-                return activeSideNudge;
+        // With only one side wall visible, use a hysteretic escape controller.
+        // It starts before the robot is in collision range and remains active
+        // until there is clearly safe clearance again.
+        if (activeSideNudge < 0) {
+            if (!leftValid || leftMM >= SIDE_RELEASE_MM) {
+                activeSideNudge = 0;
+            }
+        } else if (activeSideNudge > 0) {
+            if (!rightValid || rightMM >= SIDE_RELEASE_MM) {
+                activeSideNudge = 0;
             }
         }
 
-        const bool leftClose = leftValid && leftMM <= SIDE_EMERGENCY_MM;
-        const bool rightClose = rightValid && rightMM <= SIDE_EMERGENCY_MM;
-
-        leftCloseCount = leftClose ? leftCloseCount + 1 : 0;
-        rightCloseCount = rightClose ? rightCloseCount + 1 : 0;
-
-        const bool leftConfirmed =
-            leftCloseCount >= SIDE_EMERGENCY_CONFIRMATIONS;
-
-        const bool rightConfirmed =
-            rightCloseCount >= SIDE_EMERGENCY_CONFIRMATIONS;
-
-        if (leftConfirmed && rightConfirmed) {
-            if (leftMM > rightMM) {
-                activeSideNudge = SIDE_EMERGENCY_CORRECTION;
-            } else if (rightMM > leftMM) {
-                activeSideNudge = -SIDE_EMERGENCY_CORRECTION;
+        if (activeSideNudge == 0) {
+            if (leftValid && leftMM <= SIDE_WARNING_MM) {
+                activeSideNudge = -1;
+            } else if (rightValid && rightMM <= SIDE_WARNING_MM) {
+                activeSideNudge = 1;
             }
-        } else if (leftConfirmed) {
-            activeSideNudge = -SIDE_EMERGENCY_CORRECTION;
-        } else if (rightConfirmed) {
-            activeSideNudge = SIDE_EMERGENCY_CORRECTION;
         }
 
         if (activeSideNudge != 0) {
-            sideNudgeEndsAt = millis() + SIDE_NUDGE_DURATION_MS;
-            leftCloseCount = 0;
-            rightCloseCount = 0;
-            return activeSideNudge;
+            const int distance = (activeSideNudge < 0) ? leftMM : rightMM;
+            int magnitude = SIDE_ESCAPE_MIN_CORRECTION;
+
+            if (distance <= SIDE_DANGER_MM) {
+                magnitude = SIDE_ESCAPE_MAX_CORRECTION;
+            } else {
+                magnitude = map(
+                    distance,
+                    SIDE_DANGER_MM,
+                    SIDE_WARNING_MM,
+                    SIDE_ESCAPE_MAX_CORRECTION,
+                    SIDE_ESCAPE_MIN_CORRECTION
+                );
+                magnitude = constrain(
+                    magnitude,
+                    SIDE_ESCAPE_MIN_CORRECTION,
+                    SIDE_ESCAPE_MAX_CORRECTION
+                );
+            }
+
+            return activeSideNudge * magnitude;
         }
 
         return 0;
@@ -372,9 +484,6 @@ private:
     float targetHeading = 0;
     bool lastForwardCompletedCell = false;
 
-    uint8_t leftCloseCount = 0;
-    uint8_t rightCloseCount = 0;
+    // -1: escaping left wall, +1: escaping right wall, 0: normal steering.
     int activeSideNudge = 0;
-    unsigned long sideNudgeEndsAt = 0;
-    unsigned long sideNudgeCooldownEndsAt = 0;
 };

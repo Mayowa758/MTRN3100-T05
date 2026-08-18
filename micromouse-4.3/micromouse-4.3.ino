@@ -1,3 +1,4 @@
+// AI-assisted code: ChatGPT was used to help implement and review the Week 12 4.3 mapping/BFS logic.
 #include "Motor.hpp"
 #include "Lidar.hpp"
 #include "DualEncoder.hpp"
@@ -104,11 +105,11 @@ void loop() {
 
     else {
 
-        // Mapping stops at 59 cells. Return along the known DFS path before
-        // BFS, so the physical robot and BFS start position are both correct.
+        // Mapping uses DFS. After mapping, BFS uses only known-open edges
+        // to return from the robot's current position to the start.
         if (!returnedToStart) {
 
-            Serial.println("Mapping complete; returning to start...");
+            Serial.println("Mapping complete; BFS current -> start...");
             returnedToStart = maze.returnToStart(robot, display);
 
             if (!returnedToStart) {
@@ -123,7 +124,7 @@ void loop() {
         if (!pathFound) {
 
             Serial.println("Mapping complete");
-            Serial.println("Finding shortest path...");
+            Serial.println("BFS start -> goal...");
 
             pathFound = maze.findShortestPath();
 
