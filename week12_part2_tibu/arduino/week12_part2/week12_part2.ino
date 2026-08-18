@@ -78,7 +78,18 @@ const bool PRINT_LIDAR_READINGS = false;
 float targetHeading = 0.0;
 bool systemReady = false;
 bool sequenceFailed = false;
+
+enum RunPhase {
+    RUN_PRE,
+    RUN_COURSE,
+    RUN_POST,
+    RUN_DONE
+};
+
+RunPhase runPhase = RUN_PRE;
+unsigned int preIndex = 0;
 unsigned int motionIndex = 0;
+unsigned int postIndex = 0;
 
 int leftCloseCount = 0;
 int rightCloseCount = 0;
@@ -233,6 +244,13 @@ bool driveCourseDistance(float distanceMm) {
     const float rightStart = -encoder.getRightRotation();
 
     unsigned long startTime = millis();
+    // 3000 ms remains the minimum timeout used by the working Part 1 code.
+    // Course segments can be much longer than one maze cell, so allow extra
+    // time in proportion to the generated distance instead of failing at 3 s.
+    const unsigned long segmentTimeout = max(
+        DRIVE_TIMEOUT,
+        (unsigned long)(distanceMm * 30.0f)
+    );
     unsigned long lastLidarUpdate = 0;
     int lidarCorrection = 0;
     int frontMM = -1;
@@ -244,7 +262,7 @@ bool driveCourseDistance(float distanceMm) {
     sideNudgeEndsAt = 0;
     sideNudgeCooldownEndsAt = 0;
 
-    while (millis() - startTime < DRIVE_TIMEOUT) {
+    while (millis() - startTime < segmentTimeout) {
         mpu.update();
 
         if (activeSideNudge != 0 &&
@@ -319,7 +337,30 @@ bool driveCourseDistance(float distanceMm) {
     }
 
     stopMotors();
-    Serial.println("Forward timeout");
+    Serial.print("Forward timeout after ");
+    Serial.print(segmentTimeout);
+    Serial.print(" ms while driving ");
+    Serial.print(distanceMm);
+    Serial.println(" mm");
+    return false;
+}
+
+bool executeGridCommand(char command) {
+    if (command == 'f') {
+        Serial.println("Grid command: f");
+        return driveCourseDistance(CELL_DISTANCE_M * 1000.0f);
+    }
+    if (command == 'l') {
+        Serial.println("Grid command: l");
+        return turnRelative(90.0f);
+    }
+    if (command == 'r') {
+        Serial.println("Grid command: r");
+        return turnRelative(-90.0f);
+    }
+
+    Serial.print("Unknown grid command: ");
+    Serial.println(command);
     return false;
 }
 
@@ -361,34 +402,79 @@ void loop() {
         return;
     }
 
-    if (motionIndex >= COURSE_MOTION_COUNT) {
-        stopMotors();
-        return;
-    }
-
-    const CourseMotion &motion = COURSE_MOTIONS[motionIndex];
-
-    Serial.print("Motion ");
-    Serial.print(motionIndex + 1);
-    Serial.print("/");
-    Serial.print(COURSE_MOTION_COUNT);
-    Serial.print(": turn ");
-    Serial.print(motion.turnDeg);
-    Serial.print(" deg, drive ");
-    Serial.print(motion.distanceMm);
-    Serial.println(" mm");
-
     bool success = true;
 
-    if (fabs(motion.turnDeg) > 0.1) {
-        success = turnRelative(motion.turnDeg);
+    if (runPhase == RUN_PRE) {
+        const unsigned int preCount = sizeof(PRE_COMMANDS) - 1;
+        if (preIndex >= preCount) {
+            runPhase = RUN_COURSE;
+            Serial.println("PRE_COMMANDS completed");
+            return;
+        }
+
+        Serial.print("PRE ");
+        Serial.print(preIndex + 1);
+        Serial.print("/");
+        Serial.print(preCount);
+        Serial.print(": ");
+        Serial.println(PRE_COMMANDS[preIndex]);
+
+        success = executeGridCommand(PRE_COMMANDS[preIndex]);
+        if (success) preIndex++;
     }
+    else if (runPhase == RUN_COURSE) {
+        if (motionIndex >= COURSE_MOTION_COUNT) {
+            runPhase = RUN_POST;
+            Serial.println("COURSE_MOTIONS completed");
+            return;
+        }
 
-    stopMotors();
-    delay(SETTLE_TIME);
+        const CourseMotion &motion = COURSE_MOTIONS[motionIndex];
 
-    if (success && motion.distanceMm > 0.1) {
-        success = driveCourseDistance(motion.distanceMm);
+        Serial.print("Motion ");
+        Serial.print(motionIndex + 1);
+        Serial.print("/");
+        Serial.print(COURSE_MOTION_COUNT);
+        Serial.print(": turn ");
+        Serial.print(motion.turnDeg);
+        Serial.print(" deg, drive ");
+        Serial.print(motion.distanceMm);
+        Serial.println(" mm");
+
+        if (fabs(motion.turnDeg) > 0.1f) {
+            success = turnRelative(motion.turnDeg);
+            stopMotors();
+            delay(SETTLE_TIME);
+        }
+
+        if (success && motion.distanceMm > 0.1f) {
+            success = driveCourseDistance(motion.distanceMm);
+        }
+
+        if (success) motionIndex++;
+    }
+    else if (runPhase == RUN_POST) {
+        const unsigned int postCount = sizeof(POST_COMMANDS) - 1;
+        if (postIndex >= postCount) {
+            runPhase = RUN_DONE;
+            stopMotors();
+            Serial.println("All PRE + COURSE + POST commands completed");
+            return;
+        }
+
+        Serial.print("POST ");
+        Serial.print(postIndex + 1);
+        Serial.print("/");
+        Serial.print(postCount);
+        Serial.print(": ");
+        Serial.println(POST_COMMANDS[postIndex]);
+
+        success = executeGridCommand(POST_COMMANDS[postIndex]);
+        if (success) postIndex++;
+    }
+    else {
+        stopMotors();
+        return;
     }
 
     stopMotors();
@@ -399,10 +485,5 @@ void loop() {
         return;
     }
 
-    motionIndex++;
     delay(SETTLE_TIME);
-
-    if (motionIndex >= COURSE_MOTION_COUNT) {
-        Serial.println("All COURSE_MOTIONS completed");
-    }
 }
