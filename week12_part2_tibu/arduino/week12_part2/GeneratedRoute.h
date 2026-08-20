@@ -8,17 +8,17 @@ struct CourseMotion {
     float distanceMm;
 };
 
-const char PRE_COMMANDS[] = "";
-const char POST_COMMANDS[] = "";
-
+const char PRE_COMMANDS[] = "llffrflffflflfrfl";
+const char POST_COMMANDS[] = "rflfrfrflfflf";
 const CourseMotion COURSE_MOTIONS[] = {
-    {0.00f, 165.00f},
-    {-45.00f, 21.21f},
-    {45.00f, 120.00f},
-    {45.00f, 417.19f},
-    {-45.00f, 305.00f},
-    {45.00f, 113.14f},
-    {-45.00f, 100.00f}
+    {0.00f, 110.00f},
+    {-45.00f, 424.26f},
+    {45.00f, 215.00f},
+    {45.00f, 35.36f},
+    {-45.00f, 120.00f},
+    {-45.00f, 63.64f},
+    {-45.00f, 345.00f},
+    {-45.00f, 134.35f},
+    {45.00f, 140.00f}
 };
-
-const unsigned int COURSE_MOTION_COUNT = 7;
+const unsigned int COURSE_MOTION_COUNT = 9;

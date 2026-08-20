@@ -178,26 +178,42 @@ def _dark_fraction(mask: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> floa
     return float(np.count_nonzero(mask[y0:y1, x0:x1])) / float((y1 - y0) * (x1 - x0))
 
 
-def detect_standard_walls(
-    rectified: np.ndarray, config: dict, wall_fraction_threshold: float | None = None
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return horizontal[8,9] and vertical[9,8] internal maze walls.
+def _line_coverage(
+    mask: np.ndarray,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    horizontal: bool,
+) -> float:
+    """Return the strongest dark line near a nominal maze-cell boundary."""
+    x0 = min(max(x0, 0), mask.shape[1])
+    x1 = min(max(x1, 0), mask.shape[1])
+    y0 = min(max(y0, 0), mask.shape[0])
+    y1 = min(max(y1, 0), mask.shape[0])
+    if x1 <= x0 or y1 <= y0:
+        return 1.0
+    roi = mask[y0:y1, x0:x1] != 0
+    coverage = roi.mean(axis=1 if horizontal else 0)
+    return float(coverage.max(initial=0.0))
 
-    ``wall_fraction_threshold`` can be raised during route recovery.  A higher
-    value requires stronger dark-pixel evidence before an edge is classified
-    as a wall, which is useful when a shadow/grid clip creates a false wall.
-    """
+
+def detect_standard_walls(
+    rectified: np.ndarray, config: dict
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return horizontal[8,9] and vertical[9,8] internal maze walls."""
     count = int(config.get("full_maze_cell_count", 9))
     size_mm = float(config.get("full_maze_size_mm", 1620.0))
     pixels_per_mm = (rectified.shape[0] - 1) / size_mm
     cell_px = float(config["maze_cell_size_mm"]) * pixels_per_mm
     half_band = max(2, int(round(float(config.get("wall_sample_half_width_mm", 12.0)) * pixels_per_mm)))
-    end_trim = int(round(float(config.get("wall_sample_end_trim_mm", 28.0)) * pixels_per_mm))
-    threshold = (
-        float(wall_fraction_threshold)
-        if wall_fraction_threshold is not None
-        else float(config.get("wall_dark_fraction_threshold", 0.25))
+    search_half_width = max(
+        half_band,
+        int(round(float(config.get("wall_search_half_width_mm", 35.0)) * pixels_per_mm)),
     )
+    end_trim = int(round(float(config.get("wall_sample_end_trim_mm", 28.0)) * pixels_per_mm))
+    threshold = float(config.get("wall_dark_fraction_threshold", 0.25))
+    line_threshold = float(config.get("wall_line_coverage_threshold", 0.35))
     wall_gray_threshold = int(config.get("wall_gray_threshold", 145))
     gray = cv2.cvtColor(rectified, cv2.COLOR_BGR2GRAY)
     dark_mask = np.where(gray <= wall_gray_threshold, 255, 0).astype(np.uint8)
@@ -209,17 +225,37 @@ def detect_standard_walls(
         for col in range(count):
             x0 = int(round(col * cell_px)) + end_trim
             x1 = int(round((col + 1) * cell_px)) - end_trim
-            horizontal[row, col] = _dark_fraction(
-                dark_mask, x0, y - half_band, x1, y + half_band + 1
-            ) >= threshold
+            horizontal[row, col] = (
+                _dark_fraction(dark_mask, x0, y - half_band, x1, y + half_band + 1)
+                >= threshold
+                or _line_coverage(
+                    dark_mask,
+                    x0,
+                    y - search_half_width,
+                    x1,
+                    y + search_half_width + 1,
+                    horizontal=True,
+                )
+                >= line_threshold
+            )
     for row in range(count):
         y0 = int(round(row * cell_px)) + end_trim
         y1 = int(round((row + 1) * cell_px)) - end_trim
         for col in range(count - 1):
             x = int(round((col + 1) * cell_px))
-            vertical[row, col] = _dark_fraction(
-                dark_mask, x - half_band, y0, x + half_band + 1, y1
-            ) >= threshold
+            vertical[row, col] = (
+                _dark_fraction(dark_mask, x - half_band, y0, x + half_band + 1, y1)
+                >= threshold
+                or _line_coverage(
+                    dark_mask,
+                    x - search_half_width,
+                    y0,
+                    x + search_half_width + 1,
+                    y1,
+                    horizontal=False,
+                )
+                >= line_threshold
+            )
     return horizontal, vertical, dark_mask
 
 
@@ -429,77 +465,37 @@ def plan_full_maze(
     config: dict,
 ) -> FullMazeResult:
     rectified, homography = rectify_full_maze(image, full_corners, config)
+    horizontal, vertical, dark_mask = detect_standard_walls(rectified, config)
     placement = map_course_placement(
         homography, course_corners, course_entrance, course_exit, config
     )
-
-    # First use the normal detector.  If one weak false-positive wall makes a
-    # perfectly valid maze section appear disconnected, retry with gradually
-    # stronger evidence required to call an edge a wall.  Raising the dark
-    # fraction threshold opens only ambiguous detections; solid dark walls
-    # still remain blocked.
-    base_threshold = float(config.get("wall_dark_fraction_threshold", 0.25))
-    retry_thresholds = config.get(
-        "wall_route_retry_thresholds",
-        [base_threshold, 0.28, 0.31, 0.34],
+    pre_route = plan_standard_route(
+        horizontal,
+        vertical,
+        (maze_start[0], maze_start[1]),
+        placement.entrance_cell,
+        maze_start[2],
+        blocked_cells=placement.cells,
+        goal_direction=placement.entrance_direction,
     )
-    thresholds: list[float] = []
-    for value in retry_thresholds:
-        value = float(value)
-        if value < base_threshold:
-            value = base_threshold
-        if value not in thresholds:
-            thresholds.append(value)
-    if base_threshold not in thresholds:
-        thresholds.insert(0, base_threshold)
-
-    last_error: ValueError | None = None
-    for threshold in thresholds:
-        horizontal, vertical, dark_mask = detect_standard_walls(
-            rectified, config, wall_fraction_threshold=threshold
-        )
-        try:
-            pre_route = plan_standard_route(
-                horizontal,
-                vertical,
-                (maze_start[0], maze_start[1]),
-                placement.entrance_cell,
-                maze_start[2],
-                blocked_cells=placement.cells,
-                goal_direction=placement.entrance_direction,
-            )
-            post_route = plan_standard_route(
-                horizontal,
-                vertical,
-                placement.exit_cell,
-                maze_goal,
-                placement.exit_direction,
-                blocked_cells=placement.cells,
-            )
-            if threshold > base_threshold + 1e-9:
-                print(
-                    f"Route recovery: accepted ambiguous openings with wall "
-                    f"threshold {threshold:.2f} (normal {base_threshold:.2f})."
-                )
-            return FullMazeResult(
-                rectified,
-                dark_mask,
-                horizontal,
-                vertical,
-                homography,
-                placement,
-                pre_route,
-                post_route,
-            )
-        except ValueError as error:
-            last_error = error
-
-    if last_error is not None:
-        raise ValueError(
-            "No standard-maze route connects the supplied location and obstacle "
-            "course, even after retrying ambiguous wall detections"
-        ) from last_error
-    raise ValueError("No standard-maze route could be generated")
+    post_route = plan_standard_route(
+        horizontal,
+        vertical,
+        placement.exit_cell,
+        maze_goal,
+        placement.exit_direction,
+        blocked_cells=placement.cells,
+    )
+    return FullMazeResult(
+        rectified,
+        dark_mask,
+        horizontal,
+        vertical,
+        homography,
+        placement,
+        pre_route,
+        post_route,
+    )
 
 
 def _global_cell_original_point(

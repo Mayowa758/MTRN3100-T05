@@ -7,69 +7,54 @@ namespace mtrn3100 {
 
 class DualEncoder {
 public:
-    DualEncoder(uint8_t enc1, uint8_t enc2, uint8_t enc3, uint8_t enc4)
-        : mot1_int(enc1), mot1_dir(enc2), mot2_int(enc3), mot2_dir(enc4) {
-        instance = this;
-        pinMode(mot1_int, INPUT_PULLUP);
-        pinMode(mot1_dir, INPUT_PULLUP);
-        pinMode(mot2_int, INPUT_PULLUP);
-        pinMode(mot2_dir, INPUT_PULLUP);
-
-        attachInterrupt(digitalPinToInterrupt(mot1_int), DualEncoder::readLeftEncoderISR, RISING);
-        attachInterrupt(digitalPinToInterrupt(mot2_int), DualEncoder::readRightEncoderISR, RISING);
+    DualEncoder(uint8_t leftInterrupt, uint8_t leftDirection,
+                uint8_t rightInterrupt, uint8_t rightDirection)
+        : leftInterrupt_(leftInterrupt), leftDirection_(leftDirection),
+          rightInterrupt_(rightInterrupt), rightDirection_(rightDirection) {
+        instance_ = this;
+        pinMode(leftInterrupt_, INPUT_PULLUP);
+        pinMode(leftDirection_, INPUT_PULLUP);
+        pinMode(rightInterrupt_, INPUT_PULLUP);
+        pinMode(rightDirection_, INPUT_PULLUP);
+        attachInterrupt(digitalPinToInterrupt(leftInterrupt_), leftISR, RISING);
+        attachInterrupt(digitalPinToInterrupt(rightInterrupt_), rightISR, RISING);
     }
 
-    void readLeftEncoder() {
-        int8_t direction = digitalRead(mot1_dir) ? 1 : -1;
-        l_count += direction;
+    long leftCount() const {
+        long value;
+        // Prevent the interrupt from changing a multi-byte value mid-read.
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { value = leftCount_; }
+        return value;
     }
 
-    void readRightEncoder() {
-        int8_t direction = digitalRead(mot2_dir) ? 1 : -1;
-        r_count += direction;
-    }
-
-    float getLeftRotation() {
-        long count;
-        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-            count = l_count;
-        }
-        return (static_cast<float>(count) / counts_per_revolution) * 2 * PI;
-    }
-
-    float getRightRotation() {
-        long count;
-        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
-            count = r_count;
-        }
-        return (static_cast<float>(count) / counts_per_revolution) * 2 * PI;
+    long rightCount() const {
+        long value;
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) { value = rightCount_; }
+        return value;
     }
 
 private:
-    static void readLeftEncoderISR() {
-        if (instance != nullptr) {
-            instance->readLeftEncoder();
+    static void leftISR() {
+        if (instance_) {
+            instance_->leftCount_ += digitalRead(instance_->leftDirection_) ? 1 : -1;
         }
     }
 
-    static void readRightEncoderISR() {
-        if (instance != nullptr) {
-            instance->readRightEncoder();
+    static void rightISR() {
+        if (instance_) {
+            instance_->rightCount_ += digitalRead(instance_->rightDirection_) ? 1 : -1;
         }
     }
 
-public:
-    const uint8_t mot1_int, mot1_dir, mot2_int, mot2_dir;
-    // 实车标定。每圈编码器计数。每格距离按固定比例错误时修改。
-    // Encoder counts per wheel revolution. Change for consistent proportional cell-distance error.
-    uint16_t counts_per_revolution = 693;
-    volatile long l_count = 0;
-    volatile long r_count = 0;
-
-private:
-    static DualEncoder* instance;
+    const uint8_t leftInterrupt_;
+    const uint8_t leftDirection_;
+    const uint8_t rightInterrupt_;
+    const uint8_t rightDirection_;
+    volatile long leftCount_ = 0;
+    volatile long rightCount_ = 0;
+    static DualEncoder* instance_;
 };
 
-DualEncoder* DualEncoder::instance = nullptr;
+DualEncoder* DualEncoder::instance_ = nullptr;
 
 }

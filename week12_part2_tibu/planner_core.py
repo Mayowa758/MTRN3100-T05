@@ -268,6 +268,53 @@ def make_dark_mask(image: np.ndarray, config: dict) -> np.ndarray:
     return dark_mask
 
 
+def make_wall_mask(
+    image: np.ndarray,
+    obstacles: Sequence[Obstacle],
+    config: dict,
+) -> np.ndarray:
+    """Extract long dark wall segments without eroding thin walls away."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    threshold = int(config.get("dark_threshold", 0))
+    if threshold > 0:
+        _, dark_mask = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
+    else:
+        _, dark_mask = cv2.threshold(
+            gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
+        )
+
+    # Closing joins small breaks caused by reflections.  Do not apply opening:
+    # even a small opening kernel can completely remove a two-pixel-wide wall.
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    dark_mask = cv2.morphologyEx(dark_mask, cv2.MORPH_CLOSE, close_kernel)
+
+    component_count, labels, stats, _ = cv2.connectedComponentsWithStats(dark_mask)
+    wall_mask = np.zeros_like(dark_mask)
+    pixels_per_mm = (image.shape[1] - 1) / float(config["course_size_mm"])
+    minimum_span_px = (
+        float(config.get("wall_min_span_fraction", 0.4))
+        * float(config["maze_cell_size_mm"])
+        * pixels_per_mm
+    )
+    for label in range(1, component_count):
+        width = int(stats[label, cv2.CC_STAT_WIDTH])
+        height = int(stats[label, cv2.CC_STAT_HEIGHT])
+        if max(width, height) >= minimum_span_px:
+            wall_mask[labels == label] = 255
+
+    # Cylinders are represented geometrically below, so remove their pixels
+    # from the wall layer to avoid treating them as long wall components.
+    for obstacle in obstacles:
+        center = (
+            int(round(obstacle.x_mm * pixels_per_mm)),
+            int(round(obstacle.y_mm * pixels_per_mm)),
+        )
+        radius = int(round((obstacle.radius_mm + 8.0) * pixels_per_mm))
+        cv2.circle(wall_mask, center, radius, 0, -1)
+    return wall_mask
+
+
 def _disk_dark_fraction(
     dark_mask: np.ndarray,
     center_x: float,
@@ -531,12 +578,18 @@ def build_occupancy(
         obstacle_mask = resized_clearance < clearance
     else:
         obstacle_mask = np.zeros_like(boundary)
-        yy, xx = np.indices(boundary.shape)
-        x_mm = xx * resolution
-        y_mm = yy * resolution
-        for obstacle in obstacles:
-            keepout = obstacle.radius_mm + clearance
-            obstacle_mask |= (x_mm - obstacle.x_mm) ** 2 + (y_mm - obstacle.y_mm) ** 2 <= keepout**2
+
+    # Always add the detected cylinders.  Previously they were omitted as soon
+    # as an environment (wall) mask was supplied.
+    yy, xx = np.indices(boundary.shape)
+    x_mm = xx * resolution
+    y_mm = yy * resolution
+    for obstacle in obstacles:
+        keepout = obstacle.radius_mm + clearance
+        obstacle_mask |= (
+            (x_mm - obstacle.x_mm) ** 2 + (y_mm - obstacle.y_mm) ** 2
+            <= keepout**2
+        )
 
     occupancy = boundary | obstacle_mask
     entry_dx, entry_dy = inward_vector(entry_edge)
@@ -1091,12 +1144,13 @@ def _plan_course_with_fixed_corners(
     entry_mm = boundary_point_for_cell(start_grid, entry_edge, config)
     exit_mm = boundary_point_for_cell(goal_grid, exit_edge, config)
     obstacles, dark_mask = detect_obstacles(rectified, config)
+    wall_mask = make_wall_mask(rectified, obstacles, config)
     occupancy, _, _, entry_edge, exit_edge = build_occupancy(
         obstacles,
         entry_mm,
         exit_mm,
         config,
-        None,
+        wall_mask,
         validate_approaches=False,
         robot_radius_mm=robot_travel_radius(config),
     )
@@ -1105,7 +1159,7 @@ def _plan_course_with_fixed_corners(
         entry_mm,
         exit_mm,
         config,
-        None,
+        wall_mask,
         validate_approaches=False,
         robot_radius_mm=robot_footprint_radius(config),
     )
@@ -1328,26 +1382,15 @@ def _validate_commands(commands: str) -> str:
 
 
 def save_arduino_header(path: str | Path, result: PlanResult, pre_commands: str, post_commands: str) -> None:
-    """Write the route in the exact format consumed by week12_part2.ino.
-
-    Standard maze movement before/after the obstacle course remains as f/l/r
-    command strings.  The continuous obstacle-course route is emitted as an
-    array of {turnDeg, distanceMm} motions so diagonal segments are preserved.
-    """
     pre = _validate_commands(pre_commands)
     post = _validate_commands(post_commands)
-
-    motions = list(result.motions)
-    for i, motion in enumerate(motions):
-        if not np.isfinite(motion.turn_deg) or not np.isfinite(motion.distance_mm):
-            raise ValueError(f"Invalid course motion {i}: non-finite value")
-        if motion.distance_mm < 0:
-            raise ValueError(f"Invalid course motion {i}: negative distance")
-
+    course_motions = [
+        f"    {{{motion.turn_deg:.2f}f, {motion.distance_mm:.2f}f}}"
+        for motion in result.motions
+    ]
     lines = [
         "/*",
         " * Generated by the Week 12 Part 2 route planner.",
-        " * Do not hand-convert COURSE_MOTIONS to f/l/r commands.",
         " */",
         "#pragma once",
         "",
@@ -1358,35 +1401,13 @@ def save_arduino_header(path: str | Path, result: PlanResult, pre_commands: str,
         "",
         f'const char PRE_COMMANDS[] = "{pre}";',
         f'const char POST_COMMANDS[] = "{post}";',
-        "",
         "const CourseMotion COURSE_MOTIONS[] = {",
-    ]
-
-    # C++ does not permit a truly empty inferred-size array on all Arduino
-    # toolchains.  Keep one harmless placeholder if planning returned no
-    # continuous motions, while exposing a count of zero to the sketch.
-    if motions:
-        lines.extend(
-            f"    {{{motion.turn_deg:.2f}f, {motion.distance_mm:.2f}f}}"
-            + ("," if i < len(motions) - 1 else "")
-            for i, motion in enumerate(motions)
-        )
-    else:
-        lines.append("    {0.00f, 0.00f}")
-
-    lines.extend([
+        ",\n".join(course_motions),
         "};",
-        f"const unsigned int COURSE_MOTION_COUNT = {len(motions)};",
+        f"const unsigned int COURSE_MOTION_COUNT = {len(course_motions)};",
         "",
-    ])
-
-    output = Path(path)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    # Write atomically so an interrupted planner run cannot leave a half-written
-    # GeneratedRoute.h that then fails to compile in Arduino IDE.
-    temporary = output.with_suffix(output.suffix + ".tmp")
-    temporary.write_text("\n".join(lines), encoding="utf-8")
-    temporary.replace(output)
+    ]
+    Path(path).write_text("\n".join(lines), encoding="utf-8")
 
 
 def imwrite_unicode(path: str | Path, image: np.ndarray) -> None:

@@ -24,9 +24,11 @@
   "corner_snap_max_angle_deg": 6.0,
   "corner_snap_max_adjustment_fraction": 0.03,
   "wall_sample_half_width_mm": 12.0,
+  "wall_search_half_width_mm": 35.0,
   "wall_sample_end_trim_mm": 28.0,
   "wall_gray_threshold": 145,
   "wall_dark_fraction_threshold": 0.25,
+  "wall_line_coverage_threshold": 0.35,
   "approach_distance_mm": 130.0,
   "grid_resolution_mm": 5.0,
   "dark_threshold": 95,
@@ -40,11 +42,5 @@
   "hough_min_radius_scale": 0.45,
   "hough_min_center_distance_scale": 0.8,
   "hough_min_dark_fraction": 0.72,
-  "border_rejection_mm": 20.0,
-  "wall_route_retry_thresholds": [
-    0.25,
-    0.28,
-    0.31,
-    0.34
-  ]
+  "border_rejection_mm": 20.0
 }
